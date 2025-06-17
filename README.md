@@ -1,1 +1,1 @@
-# GenerativeModel_NumericalDesign
+# GenerativeDynamics - NumericalDesign
