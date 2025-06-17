@@ -1,1 +1,1 @@
-# GenerativeModel-ill-conditioned-distribution
+# GenerativeModel_NumericalDesign
