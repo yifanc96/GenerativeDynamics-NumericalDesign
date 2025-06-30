@@ -571,7 +571,7 @@ class Trainer:
         
         tensor_img = T.ToTensor()(Image.open(spectrum_save_name))
 
-        f = lambda x: wandb.Image(x[None,...])
+        f = lambda x: wandb.Image(x)
         if config.use_wandb:
             wandb.log({f'energy spectrum (test on {which} data)': f(tensor_img)}, step = self.global_step) 
     

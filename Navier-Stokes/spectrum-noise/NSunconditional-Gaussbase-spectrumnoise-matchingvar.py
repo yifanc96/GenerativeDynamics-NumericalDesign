@@ -378,7 +378,7 @@ class Trainer:
         # tmp = torch.fft.ifftn(self.spectrum_amplitude*noise, dim = (2,3),norm = "forward").real
 
         tmp = torch.fft.ifftn((self.spectrum_amplitude)*noise, dim = (2,3),norm = "forward").real
-        D = {'z0': tmp, 'z1': xhi, 'cond': xlo, 'y': y}
+        D = {'z0': tmp, 'z1': xhi, 'cond': None, 'y': y}
 
         if time == 'unif':
             D['t'] = self.time_dist.sample(sample_shape = (xhi.shape[0],)).squeeze().type_as(D['z1'])
@@ -545,7 +545,7 @@ class Trainer:
         
         tensor_img = T.ToTensor()(Image.open(spectrum_save_name))
 
-        f = lambda x: wandb.Image(x[None,...])
+        f = lambda x: wandb.Image(x)
         if config.use_wandb:
             wandb.log({f'energy spectrum (test on {which} data)': f(tensor_img)}, step = self.global_step) 
     
@@ -584,7 +584,7 @@ class Loggers:
         date = str(datetime.datetime.now())
         self.log_base = date[date.find("-"):date.rfind(".")].replace("-", "").replace(":", "").replace(" ", "_")
         self.log_name = 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + '_' + self.log_base
-        self.verbose_log_name = 'matchingvar_GaussODEspectrumnoise_numdata'+ str(config.num_dataset) + 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + 'sz' + str(config.base_lr).replace(".","") + 'max' + str(config.max_steps) + '_' + self.log_base
+        self.verbose_log_name = 'uncond_GaussODEspectrumnoise_numdata'+ str(config.num_dataset) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + 'sz' + str(config.base_lr).replace(".","") + 'max' + str(config.max_steps) + '_' + self.log_base
         
     def is_type_for_logging(self, x):
         if isinstance(x, int):

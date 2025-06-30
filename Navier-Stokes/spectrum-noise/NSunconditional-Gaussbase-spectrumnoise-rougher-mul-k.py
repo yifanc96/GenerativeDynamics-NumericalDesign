@@ -294,15 +294,11 @@ class Sampler:
             z1_train = self.to_grid(z1[:num_train,...], normalize = normalize)
             z1_test = self.to_grid(z1[num_train:,...], normalize = normalize)
             
-            zcond = get_tensor_from_figures(D['cond'])
-            zcond_train = self.to_grid(zcond[:num_train,...], normalize = normalize)
-            zcond_test = self.to_grid(zcond[num_train:,...], normalize = normalize)
+            both_train = torch.cat([z0_train, sample_train, z1_train], dim=-1)
+            both_test = torch.cat([z0_test, sample_test, z1_test], dim=-1)
             
-            both_train = torch.cat([zcond_train, z0_train, sample_train, z1_train], dim=-1)
-            both_test = torch.cat([zcond_test, z0_test, sample_test, z1_test], dim=-1)
-            
-            wandb.log({'training-conditioning_x0_sampledx1_truthx1': wandb.Image(both_train)}, step = global_step)
-            wandb.log({'testing-conditioning_x0_sampledx1_truthx1': wandb.Image(both_test)}, step = global_step)
+            wandb.log({'training-x0_sampledx1_truthx1': wandb.Image(both_train)}, step = global_step)
+            wandb.log({'testing-x0_sampledx1_truthx1': wandb.Image(both_test)}, step = global_step)
 
     @torch.no_grad()
     def sample(self, D, model, global_step, wand_log = True):
@@ -387,7 +383,7 @@ class Trainer:
         # tmp = torch.fft.ifftn(self.spectrum_amplitude*noise, dim = (2,3),norm = "forward").real
 
         tmp = torch.fft.ifftn((self.spectrum_amplitude)*noise, dim = (2,3),norm = "forward").real
-        D = {'z0': tmp, 'z1': xhi, 'cond': xlo, 'y': y}
+        D = {'z0': tmp, 'z1': xhi, 'cond': None, 'y': y}
 
         if time == 'unif':
             D['t'] = self.time_dist.sample(sample_shape = (xhi.shape[0],)).squeeze().type_as(D['z1'])
@@ -554,7 +550,7 @@ class Trainer:
         
         tensor_img = T.ToTensor()(Image.open(spectrum_save_name))
 
-        f = lambda x: wandb.Image(x[None,...])
+        f = lambda x: wandb.Image(x)
         if config.use_wandb:
             wandb.log({f'energy spectrum (test on {which} data)': f(tensor_img)}, step = self.global_step) 
     
@@ -593,7 +589,7 @@ class Loggers:
         date = str(datetime.datetime.now())
         self.log_base = date[date.find("-"):date.rfind(".")].replace("-", "").replace(":", "").replace(" ", "_")
         self.log_name = 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + '_' + self.log_base
-        self.verbose_log_name = 'specnoisemulk_GaussODE_numdata'+ str(config.num_dataset) + 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + 'sz' + str(config.base_lr).replace(".","") + 'max' + str(config.max_steps) + '_' + self.log_base
+        self.verbose_log_name = 'uncond_GaussODE_specnoisemulk_numdata'+ str(config.num_dataset) + 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + 'sz' + str(config.base_lr).replace(".","") + 'max' + str(config.max_steps) + '_' + self.log_base
         
     def is_type_for_logging(self, x):
         if isinstance(x, int):
@@ -654,8 +650,6 @@ class Config:
         self.batch_size = 100
         self.num_workers = 4
         self.train_test_split = 0.9
-        self.delta_t = 0.5
-        self.time_lag = 2  # note that the physical lag = time_lag * delta_t = 0.5*time_lag
         self.noise_strength = 0.0
         self.data_subsampling_ratio = 1.0  # use a small amount of data, for sanity check of the code
         
@@ -669,7 +663,7 @@ class Config:
         self.t_max_train = 1
         self.t_min_sample = 0
         self.t_max_sample = 1
-        self.EMsteps = 200
+        self.EMsteps = 100
         self.print_loss_every = 20 
         self.print_gradnorm_every =  20
         self.num_reference_batch_train = 10
@@ -712,7 +706,7 @@ class Config:
             self.unet_random_fourier_features = False
         else:
             assert False
-        self.cond_channels = self.C  # dimension of the conditional channel; here conditioned on z_0
+        self.cond_channels = 0  # dimension of the conditional channel; here conditioned on z_0
         # the conditioned term is appended to the input (so the final channel dim = cond_channels + input_channels)
 
 def get_parser():
