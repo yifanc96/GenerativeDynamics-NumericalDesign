@@ -403,10 +403,10 @@ class Trainer:
         loss = (model_out - target).pow(2).sum(-1).sum(-1).sum(-1) # using full squared loss here
         return loss.mean()
     
-    def clip_grad_norm(self, model, max_grad_norm = 1e+4):
+    def clip_grad_norm(self, model, max_grad_norm = 1e+5):
         return torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm = max_grad_norm, norm_type = 2.0, error_if_nonfinite = False)
 
-    def optimizer_one_step(self, max_grad_norm = 1e+4):
+    def optimizer_one_step(self, max_grad_norm = 1e+5):
         self.clip_grad_norm(self.model, max_grad_norm = max_grad_norm)
         if self.global_step % self.config.print_loss_every == 0:
             grads = [ param.grad.detach().flatten() for param in self.model.parameters() if param.grad is not None]
