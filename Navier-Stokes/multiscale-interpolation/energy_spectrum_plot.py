@@ -310,7 +310,7 @@ def rfft_mesh(trajectory):
 import scipy.stats as stats
 def get_energy_spectrum(vorticity_trajectory):
     vorticity_hat = torch.fft.fftn(vorticity_trajectory,dim=(1,2),norm = "forward")
-    fourier_amplitudes = np.abs(vorticity_hat)**2 * (2*np.pi)
+    fourier_amplitudes = np.abs(vorticity_hat)**2 
     fourier_amplitudes = fourier_amplitudes.mean(dim=0)
     npix = vorticity_hat.shape[-1]
     kfreq = np.fft.fftfreq(npix) * npix
