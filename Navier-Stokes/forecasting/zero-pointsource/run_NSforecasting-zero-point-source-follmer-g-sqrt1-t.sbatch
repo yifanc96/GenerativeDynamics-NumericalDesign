@@ -7,15 +7,15 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mail-type=END
 #SBATCH --mail-user=yc3400@nyu.edu
-#SBATCH --output=/home/yc3400/scratch_research/gitrepo/GenerativeDynamics-NumericalDesign/Navier-Stokes/forecasting/pointsource/logs/%A_%a.out
-#SBATCH --error=/home/yc3400/scratch_research/gitrepo/GenerativeDynamics-NumericalDesign/Navier-Stokes/forecasting/pointsource/logs/%A_%a.err
+#SBATCH --output=/home/yc3400/scratch_research/gitrepo/GenerativeDynamics-NumericalDesign/Navier-Stokes/forecasting/zero-pointsource/logs/%A_%a.out
+#SBATCH --error=/home/yc3400/scratch_research/gitrepo/GenerativeDynamics-NumericalDesign/Navier-Stokes/forecasting/zero-pointsource/logs/%A_%a.err
 
 ## convenience definitions
 SINGULARITY_IMAGE=/scratch/work/public/singularity/cuda12.3.2-cudnn9.0.0-ubuntu-22.04.4.sif
 OVERLAY_FILE=/scratch/yc3400/my_env/overlay-15GB-500K.ext3:ro
-LAUNCHER_FILE=/home/yc3400/scratch_research/gitrepo/GenerativeDynamics-NumericalDesign/Navier-Stokes/forecasting/pointsource/NSforecasting-point-source.py
-PY_DIR=/home/yc3400/scratch_research/gitrepo/GenerativeDynamics-NumericalDesign/Navier-Stokes/forecasting/pointsource
-output_folder=/home/yc3400/scratch_research/gitrepo/GenerativeDynamics-NumericalDesign/Navier-Stokes/forecasting/pointsource/logs
+LAUNCHER_FILE=/home/yc3400/scratch_research/gitrepo/GenerativeDynamics-NumericalDesign/Navier-Stokes/forecasting/zero-pointsource/NSforecasting-zero-point-source-follmer-g-sqrt1-t.py
+PY_DIR=/home/yc3400/scratch_research/gitrepo/GenerativeDynamics-NumericalDesign/Navier-Stokes/forecasting/zero-pointsource
+output_folder=/home/yc3400/scratch_research/gitrepo/GenerativeDynamics-NumericalDesign/Navier-Stokes/forecasting/zero-pointsource/logs
 
 ## modules provided by the singularity image
 module purge

@@ -130,29 +130,33 @@ class Interpolants:
     
     """ 
     Definition of interpolants
-    I_t = beta x_1 + sigma sqrt(t) z
-    R_t = beta_dot x_1 + sigma_dot sqrt(t)z
+    I_t = beta x_1 + gamma z
+    R_t = g_t^2 * 1/eps * x_1  - g_t^2* sqrt(h_t/(eps*(1-h_t))) * z
     """
     
     def __init__(self, config):
         super(Interpolants, self).__init__()
         self.config = config
         print(f'[Interpolants] noise strength is {config.noise_strength}, multiplied with avg_pixel_norm {config.avg_pixel_norm}')
+
+
+    def a(self, t): # r_t = exp(int_0^t a_u du)
+        return 0 * torch.ones_like(t)
         
-    def beta(self, t):
-        return t
+    def g(self, t):
+        return config.avg_pixel_norm * config.noise_strength* (1-t).sqrt() * torch.ones_like(t)
 
-    def beta_dot(self, t):
-        return 1.0 * torch.ones_like(t)
+    def h(self, t): # 1/eps * int_0^t r_t^2/r_u^2 g_u^2 du
+        return (2*t - t**2) * torch.ones_like(t)
 
-    def sigma(self, t):
-        return config.avg_pixel_norm * config.noise_strength * (1-t) * torch.ones_like(t)
+    def eps(self):  # int_0^1 r_1^2/r_u^2 g_u^2 du
+        return (config.avg_pixel_norm * config.noise_strength)**2 * 0.5
+    
+    def beta(self, t): # beta_t = h_t
+        return self.h(t)
 
-    def sigma_dot(self, t):
-        return -1.0 * config.avg_pixel_norm * config.noise_strength * torch.ones_like(t)
-
-    def gamma(self, t):
-        return self.sigma(t) * t.sqrt()
+    def gamma(self, t): # sigma_t = sqrt(eps*h_t*(1-h_t))
+        return (self.eps()*self.h(t)*(1-self.h(t))).sqrt()
     
     def wide(self, x):
         return x[:, None, None, None]
@@ -164,7 +168,7 @@ class Interpolants:
         z0 = 0, 
         z1 = x1 - x0
         z = z_noise
-        zt = I_t = beta x_1 + sigma sqrt(t) z
+        zt = I_t = beta x_1 + gamma z
         """
         z0 = D['z0']
         z1 = D['z1']
@@ -183,16 +187,19 @@ class Interpolants:
         z0 = 0, 
         z1 = x1 - x0
         z = z_noise
-        R_t = beta_dot x_1 + sigma_dot sqrt(t)z
+        R_t = g_t^2 * 1/eps * x_1  - g_t^2* sqrt(h_t/(eps*(1-h_t))) * z
         """
         z0 = D['z0']
         z1 = D['z1']
         t = D['t']
         noise = D['z_noise']
 
-        bdot = self.wide(self.beta_dot(t))
-        noise_coef = self.wide(self.sigma_dot(t) * t.sqrt())
-        return (bdot * z1) + (noise_coef * noise)
+        z_coef = self.wide(self.g(t)**2 / self.eps())
+
+        # tmp = - self.g(t)**2 * (self.h(t)/(self.eps()*(1-self.h(t)))).sqrt()
+        tmp = - (self.h(t)/(self.eps())).sqrt() # because g(t)^2 = sqrt(1-h(t)) = 1-t
+        noise_coef = self.wide(tmp)
+        return (z_coef * z1) + (noise_coef * noise)
 
     
 
@@ -207,7 +214,8 @@ class Sampler:
         self.config = config
         self.logger = Loggers(config)
         self.interpolant = Interpolants(config)
-        self.sigma = self.interpolant.sigma
+        self.g = self.interpolant.g
+        self.a = self.interpolant.a
         return
     
     def wide(self, x):
@@ -225,8 +233,9 @@ class Sampler:
         for tscalar in tgrid:
             t_arr = tscalar * ones
             f = model(zt, t_arr, y, cond = cond) # note we condiition on init cond
-            g = self.wide(self.sigma(t_arr))  #(batch, 1, 1, 1)
-            zt_mean = zt + f * dt
+            g = self.wide(self.g(t_arr))  #(batch, 1, 1, 1)
+            a = self.wide(self.a(t_arr))
+            zt_mean = zt + (a+f) * dt
             diffusion_term = g * torch.randn_like(zt_mean) * torch.sqrt(dt)
             zt = zt_mean + diffusion_term
         return zt_mean
@@ -534,7 +543,10 @@ class Trainer:
         
         tensor_img = T.ToTensor()(Image.open(spectrum_save_name))
 
-        f = lambda x: wandb.Image(x[None,...])
+        if tensor_img.dim() == 3:
+            f = lambda x: wandb.Image(x)
+        else:
+            f = lambda x: wandb.Image(x.squeeze())
         if config.use_wandb:
             wandb.log({f'energy spectrum (test on {which} data)': f(tensor_img)}, step = self.global_step) 
     
@@ -573,7 +585,7 @@ class Loggers:
         date = str(datetime.datetime.now())
         self.log_base = date[date.find("-"):date.rfind(".")].replace("-", "").replace(":", "").replace(" ", "_")
         self.log_name = 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + '_' + self.log_base
-        self.verbose_log_name = 'zerobase_betat_numdata'+ str(config.num_dataset) + 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + 'sz' + str(config.base_lr).replace(".","") + 'max' + str(config.max_steps) + '_' + self.log_base
+        self.verbose_log_name = 'zero_Follmergsqrt1-t_numdata'+ str(config.num_dataset) + 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + 'sz' + str(config.base_lr).replace(".","") + 'max' + str(config.max_steps) + '_' + self.log_base
         
     def is_type_for_logging(self, x):
         if isinstance(x, int):
@@ -646,9 +658,9 @@ class Config:
         self.base_lr = 2*1e-4
         self.max_steps = 100
         self.t_min_train = 0
-        self.t_max_train = 1
+        self.t_max_train = 1 - 0.0001
         self.t_min_sample = 0
-        self.t_max_sample = 1
+        self.t_max_sample = 1 - 0.0001
         self.EMsteps = 200
         self.print_loss_every = 20 
         self.print_gradnorm_every =  20
@@ -722,9 +734,9 @@ args.use_wandb = bool(args.use_wandb)
 
 
 ###### data location
-# list_data_loc = ["/data_file.pt"]
-list_suffix = [f"0{i}" for i in np.arange(1,args.num_dataset)] + ["10"]
-list_data_loc = [f"/scratch/mh5113/forecasting/new_simulations_lag_05_term" + i + ".pt" for i in list_suffix]
+list_suffix = [f"0{i}" for i in np.arange(1,args.num_dataset+1)]
+# list_data_loc = [f"/scratch/mh5113/forecasting/new_simulations_lag_05_term" + i + ".pt" for i in list_suffix]
+list_data_loc = [f"/scratch/yc3400/forecasting/NSEdata/data_file" + i + ".pt" for i in list_suffix]
 if args.num_dataset < len(list_data_loc): 
     list_data_loc = list_data_loc[:args.num_dataset]
     args.num_dataset = len(list_data_loc)

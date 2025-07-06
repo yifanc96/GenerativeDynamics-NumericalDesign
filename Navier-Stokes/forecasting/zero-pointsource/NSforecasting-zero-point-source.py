@@ -130,8 +130,8 @@ class Interpolants:
     
     """ 
     Definition of interpolants
-    I_t = beta x_1 + sigma  z
-    R_t = beta_dot x_1 + sigma_dot z
+    I_t = beta x_1 + sigma sqrt(t) z
+    R_t = beta_dot x_1 + sigma_dot sqrt(t)z
     """
     
     def __init__(self, config):
@@ -140,16 +140,19 @@ class Interpolants:
         print(f'[Interpolants] noise strength is {config.noise_strength}, multiplied with avg_pixel_norm {config.avg_pixel_norm}')
         
     def beta(self, t):
-        return t
+        return t ** 2
 
     def beta_dot(self, t):
-        return 1.0 * torch.ones_like(t)
+        return 2.0 * t * torch.ones_like(t)
 
     def sigma(self, t):
         return config.avg_pixel_norm * config.noise_strength * (1-t) * torch.ones_like(t)
 
     def sigma_dot(self, t):
         return -1.0 * config.avg_pixel_norm * config.noise_strength * torch.ones_like(t)
+
+    def gamma(self, t):
+        return self.sigma(t) * t.sqrt()
     
     def wide(self, x):
         return x[:, None, None, None]
@@ -158,18 +161,18 @@ class Interpolants:
     def It(self, D):
         """
         D is a dictionary containing 
-        z0 ~ N(0,1), 
+        z0 = 0, 
         z1 = x1 - x0
-        z = z_noise HERE IS NONE for ODE flow matching model
-        zt = I_t = beta x_1 + sigma z0
+        z = z_noise
+        zt = I_t = beta x_1 + sigma sqrt(t) z
         """
         z0 = D['z0']
         z1 = D['z1']
         t = D['t']
-        # noise = D['z_noise']
+        noise = D['z_noise']
 
         bterm = self.wide(self.beta(t)) * z1
-        gterm = self.wide(self.sigma(t)) * z0
+        gterm = self.wide(self.gamma(t)) * noise
 
         D['zt'] = bterm + gterm
         return D
@@ -177,19 +180,19 @@ class Interpolants:
     def Rt(self, D):
         """
         D is a dictionary containing 
-        z0 ~ N(0,1), 
+        z0 = 0, 
         z1 = x1 - x0
-        z = z_noise HERE IS NONE for ODE flow matching model
-        R_t = beta_dot x_1 + sigma_dot sqrt(t)z0
+        z = z_noise
+        R_t = beta_dot x_1 + sigma_dot sqrt(t)z
         """
         z0 = D['z0']
         z1 = D['z1']
         t = D['t']
-        # noise = D['z_noise']
+        noise = D['z_noise']
 
         bdot = self.wide(self.beta_dot(t))
-        noise_coef = self.wide(self.sigma_dot(t))
-        return (bdot * z1) + (noise_coef * z0)
+        noise_coef = self.wide(self.sigma_dot(t) * t.sqrt())
+        return (bdot * z1) + (noise_coef * noise)
 
     
 
@@ -222,10 +225,10 @@ class Sampler:
         for tscalar in tgrid:
             t_arr = tscalar * ones
             f = model(zt, t_arr, y, cond = cond) # note we condiition on init cond
-            # g = self.wide(self.sigma(t_arr))  #(batch, 1, 1, 1)
-            zt_mean = zt + f * dt # ODE flow matching
-            # diffusion_term = g * torch.randn_like(zt_mean) * torch.sqrt(dt)
-            zt = zt_mean 
+            g = self.wide(self.sigma(t_arr))  #(batch, 1, 1, 1)
+            zt_mean = zt + f * dt
+            diffusion_term = g * torch.randn_like(zt_mean) * torch.sqrt(dt)
+            zt = zt_mean + diffusion_term
         return zt_mean
 
     # for plotting samples
@@ -349,11 +352,11 @@ class Trainer:
     def prepare_batch(self, batch, time = 'unif', use_reference_batch = False):
         """
         D: a dictionary of x0, x1, z, and t, for interpolants
-        here z0 ~ N(0,I), 
+        here z0 = 0, 
              z1 = x1 - x0
              cond = x0
              t = uniform samples from [0,1]
-             z = z_noise ~ N(0,I) HERE IS NONE for ODE flow matching model
+             z = z_noise ~ N(0,I)
         """
         
         if use_reference_batch:
@@ -364,7 +367,7 @@ class Trainer:
         y = torch.zeros(xlo.size()[0]) # dummy variable; we do not use labels
         xlo, xhi, y = xlo.to(self.device), xhi.to(self.device), y.to(self.device)
         
-        D = {'z0': torch.randn_like(xhi), 'z1': xhi-xlo, 'cond': xlo, 'z_noise': None, 'y': y}
+        D = {'z0': torch.zeros_like(xlo), 'z1': xhi-xlo, 'cond': xlo, 'z_noise': torch.randn_like(xhi), 'y': y}
         
         if time == 'unif':
             D['t'] = self.time_dist.sample(sample_shape = (xhi.shape[0],)).squeeze().type_as(D['z1'])
@@ -531,7 +534,12 @@ class Trainer:
         
         tensor_img = T.ToTensor()(Image.open(spectrum_save_name))
 
-        f = lambda x: wandb.Image(x[None,...])
+        # f = lambda x: wandb.Image(x[None,...])
+        if tensor_img.dim() == 3:
+            f = lambda x: wandb.Image(x)
+        else:
+            f = lambda x: wandb.Image(x.squeeze())
+            
         if config.use_wandb:
             wandb.log({f'energy spectrum (test on {which} data)': f(tensor_img)}, step = self.global_step) 
     
@@ -570,7 +578,7 @@ class Loggers:
         date = str(datetime.datetime.now())
         self.log_base = date[date.find("-"):date.rfind(".")].replace("-", "").replace(":", "").replace(" ", "_")
         self.log_name = 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + '_' + self.log_base
-        self.verbose_log_name = 'Gaussianbase_betat_numdata'+ str(config.num_dataset) + 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + 'sz' + str(config.base_lr).replace(".","") + 'max' + str(config.max_steps) + '_' + self.log_base
+        self.verbose_log_name = 'zerobase_numdata'+ str(config.num_dataset) + 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + 'sz' + str(config.base_lr).replace(".","") + 'max' + str(config.max_steps) + '_' + self.log_base
         
     def is_type_for_logging(self, x):
         if isinstance(x, int):
@@ -646,7 +654,7 @@ class Config:
         self.t_max_train = 1
         self.t_min_sample = 0
         self.t_max_sample = 1
-        self.EMsteps = 200
+        self.EMsteps = 100
         self.print_loss_every = 20 
         self.print_gradnorm_every =  20
         self.num_reference_batch_train = 10
@@ -717,10 +725,11 @@ np.random.seed(random_seed)
 args = get_parser()
 args.use_wandb = bool(args.use_wandb)
 
+
 ###### data location
-# list_data_loc = ["/data_file.pt"]
-list_suffix = [f"0{i}" for i in np.arange(1,args.num_dataset)] + ["10"]
-list_data_loc = [f"/scratch/mh5113/forecasting/new_simulations_lag_05_term" + i + ".pt" for i in list_suffix]
+list_suffix = [f"0{i}" for i in np.arange(1,args.num_dataset+1)]
+# list_data_loc = [f"/scratch/mh5113/forecasting/new_simulations_lag_05_term" + i + ".pt" for i in list_suffix]
+list_data_loc = [f"/scratch/yc3400/forecasting/NSEdata/data_file" + i + ".pt" for i in list_suffix]
 if args.num_dataset < len(list_data_loc): 
     list_data_loc = list_data_loc[:args.num_dataset]
     args.num_dataset = len(list_data_loc)
@@ -738,3 +747,56 @@ logger.setup_wandb(config)
 trainer = Trainer(config)
 trainer.fit()
 
+
+# #### test code
+# from time import time
+# time_begin = time()
+# data_raw,time_raw = torch.load("/scratch/mh5113/forecasting/new_simulations_lag_05_term" + "02" + ".pt")
+# avg_pixel_norm = 3.0679163932800293
+# Ntj, Nts, Nx, Ny = data_raw.size() 
+# tmp = torch.norm(data_raw,dim=(2,3),p='fro').mean() / np.sqrt(Nx*Ny)
+# print(f'---- [dataset] average pixel norm of data set {tmp.item()}')
+# data_raw = data_raw/avg_pixel_norm
+# hi_size = 128
+# lo_size = 128
+# print(f'---- [processing] low resolution {lo_size}, high resolution {hi_size}')
+# hi = torch.nn.functional.interpolate(data_raw, size=(hi_size,hi_size),mode='bilinear')
+# lo = torch.nn.functional.interpolate(data_raw, size=(lo_size,lo_size),mode='bilinear')
+# m = nn.Upsample(scale_factor=int(hi_size/lo_size), mode='nearest')
+# lo = m(lo)
+# del data_raw
+# thisdata = lo[:,-1,...] #200*128*128
+# thisdata = thisdata[:50,None,...]
+# n_data = thisdata.size()[0]
+
+# checkpoint_PATHS = ["/scratch/yc3400/forecasting/checkpoint/linbeta_sqrtsigmaFollmer_numdata10lag2noise1.0lo128hi128sz00001max100000_0216_113914/model_step100000.pth"]
+# n_iter = 4
+# n_samples = 300
+
+# for i in range(1):
+#     PATH_file = checkpoint_PATHS[0]
+    
+#     print(PATH_file)
+#     res_load = torch.load(PATH_file)
+#     trainer.model.load_state_dict(res_load["model"])
+#     trainer.model.eval()
+    
+#     test_input = thisdata
+#     test_result = torch.zeros(n_data,n_samples,n_iter,hi_size,hi_size).to(trainer.device)
+#     input_batch = [test_input,test_input]
+    
+#     with torch.no_grad():
+#         for i in range(n_samples):
+#             D = trainer.prepare_batch(input_batch)  
+#             for j in range(n_iter):
+#                 test_result[:,i:i+1,j,...] = trainer.sampler.EM(D,trainer.model, steps = 200)
+#                 D['z0'] = test_result[:,i:i+1,j,...]
+#                 total_mins = (time() - time_begin) / 60
+#                 print(f'sample {i}/{n_samples}, iter {j}/{n_iter}, finished in {total_mins:.2f} minutes')
+    
+#     test_result = test_result * trainer.original_avg_pixel_norm
+    
+    
+#     PATH = PATH_file[:PATH_file.rfind("/")]
+#     save_path =  PATH + f"/output_{n_samples}ensem_{n_iter}steps_{n_data}input_EM200.pt"
+#     torch.save(test_result.cpu(), save_path)

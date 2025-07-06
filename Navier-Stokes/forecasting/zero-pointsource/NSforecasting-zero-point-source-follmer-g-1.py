@@ -130,35 +130,33 @@ class Interpolants:
     
     """ 
     Definition of interpolants
-    I_t = alpha x_0 + beta x_1 + sigma sqrt(t) z
-    R_t = alpha_dot x_0 + beta_dot x_1 + sigma_dot sqrt(t)z
+    I_t = beta x_1 + gamma z
+    R_t = g_t^2 * 1/eps * x_1  - g_t^2* sqrt(h_t/(eps*(1-h_t))) * z
     """
     
     def __init__(self, config):
         super(Interpolants, self).__init__()
         self.config = config
         print(f'[Interpolants] noise strength is {config.noise_strength}, multiplied with avg_pixel_norm {config.avg_pixel_norm}')
+
+
+    def a(self, t): # r_t = exp(int_0^t a_u du)
+        return 0 * torch.ones_like(t)
         
-    def alpha(self, t):
-        return 1-t
+    def g(self, t):
+        return config.avg_pixel_norm * config.noise_strength* 1.0 * torch.ones_like(t)
 
-    def alpha_dot(self, t):
-        return -1.0 * torch.ones_like(t)
+    def h(self, t): # 1/eps * int_0^t r_t^2/r_u^2 g_u^2 du
+        return t * torch.ones_like(t)
 
-    def beta(self, t):
-        return t ** 2
+    def eps(self):  # int_0^1 r_1^2/r_u^2 g_u^2 du
+        return (config.avg_pixel_norm * config.noise_strength)**2 * 1.0
+    
+    def beta(self, t): # beta_t = h_t
+        return self.h(t)
 
-    def beta_dot(self, t):
-        return 2.0 * t * torch.ones_like(t)
-
-    def sigma(self, t):
-        return config.avg_pixel_norm * config.noise_strength * (1-t) * torch.ones_like(t)
-
-    def sigma_dot(self, t):
-        return -1.0 * config.avg_pixel_norm * config.noise_strength * torch.ones_like(t)
-
-    def gamma(self, t):
-        return self.sigma(t) * t.sqrt()
+    def gamma(self, t): # sigma_t = sqrt(eps*h_t*(1-h_t))
+        return (self.eps()*self.h(t)*(1-self.h(t))).sqrt()
     
     def wide(self, x):
         return x[:, None, None, None]
@@ -167,40 +165,40 @@ class Interpolants:
     def It(self, D):
         """
         D is a dictionary containing 
-        x0 = z0, 
-        x1 = z1, 
+        z0 = 0, 
+        z1 = x1 - x0
         z = z_noise
-        zt = I_t = alpha x_0 + beta x_1 + sigma sqrt(t) z
+        zt = I_t = beta x_1 + gamma z
         """
         z0 = D['z0']
         z1 = D['z1']
         t = D['t']
         noise = D['z_noise']
 
-        aterm = self.wide(self.alpha(t)) * z0
         bterm = self.wide(self.beta(t)) * z1
         gterm = self.wide(self.gamma(t)) * noise
 
-        D['zt'] = aterm + bterm + gterm
+        D['zt'] = bterm + gterm
         return D
 
     def Rt(self, D):
         """
         D is a dictionary containing 
-        x0 = z0, 
-        x1 = z1, 
+        z0 = 0, 
+        z1 = x1 - x0
         z = z_noise
-        R_t = alpha_dot x_0 + beta_dot x_1 + sigma_dot sqrt(t)z
+        R_t = g_t^2 * 1/eps * x_1  - g_t^2* sqrt(h_t/(eps*(1-h_t))) * z
         """
         z0 = D['z0']
         z1 = D['z1']
         t = D['t']
         noise = D['z_noise']
 
-        adot = self.wide(self.alpha_dot(t))
-        bdot = self.wide(self.beta_dot(t))
-        noise_coef = self.wide(self.sigma_dot(t) * t.sqrt())
-        return (adot * z0) + (bdot * z1) + (noise_coef * noise)
+        z_coef = self.wide(self.g(t)**2 / self.eps())
+
+        tmp = - self.g(t)**2 * (self.h(t)/(self.eps()*(1-self.h(t)))).sqrt()
+        noise_coef = self.wide(tmp)
+        return (z_coef * z1) + (noise_coef * noise)
 
     
 
@@ -215,7 +213,8 @@ class Sampler:
         self.config = config
         self.logger = Loggers(config)
         self.interpolant = Interpolants(config)
-        self.sigma = self.interpolant.sigma
+        self.g = self.interpolant.g
+        self.a = self.interpolant.a
         return
     
     def wide(self, x):
@@ -233,8 +232,9 @@ class Sampler:
         for tscalar in tgrid:
             t_arr = tscalar * ones
             f = model(zt, t_arr, y, cond = cond) # note we condiition on init cond
-            g = self.wide(self.sigma(t_arr))  #(batch, 1, 1, 1)
-            zt_mean = zt + f * dt
+            g = self.wide(self.g(t_arr))  #(batch, 1, 1, 1)
+            a = self.wide(self.a(t_arr))
+            zt_mean = zt + (a+f) * dt
             diffusion_term = g * torch.randn_like(zt_mean) * torch.sqrt(dt)
             zt = zt_mean + diffusion_term
         return zt_mean
@@ -251,7 +251,7 @@ class Sampler:
     # for logging sampled images to wandb
     def log_wandb_figure(self, sample, D, global_step):
         """
-        plot conditioning input, x0, sampled x1, truth x1
+        plot conditioning input, x0, sampled x1-x0+x0, truth x1
         here D includes conditioning input, x0, truth x1
         and sample includes sampled x1
         finally, upload the figures to wandb
@@ -294,7 +294,7 @@ class Sampler:
             z0_train = self.to_grid(z0[:num_train,...], normalize = normalize)
             z0_test = self.to_grid(z0[num_train:,...], normalize = normalize)
             
-            z1 = get_tensor_from_figures(D['z1'])
+            z1 = get_tensor_from_figures(D['z1']+D['cond'])
             z1_train = self.to_grid(z1[:num_train,...], normalize = normalize)
             z1_test = self.to_grid(z1[num_train:,...], normalize = normalize)
             
@@ -316,7 +316,7 @@ class Sampler:
         else:
             assert False
         if self.config.use_wandb and wand_log:
-            self.log_wandb_figure(zT, D, global_step)        
+            self.log_wandb_figure(zT + D['cond'], D, global_step)        
 
 ################ trainer ################
 
@@ -360,9 +360,9 @@ class Trainer:
     def prepare_batch(self, batch, time = 'unif', use_reference_batch = False):
         """
         D: a dictionary of x0, x1, z, and t, for interpolants
-        here x0 = z0
-             x1 = z1
-             cond = z0
+        here z0 = 0, 
+             z1 = x1 - x0
+             cond = x0
              t = uniform samples from [0,1]
              z = z_noise ~ N(0,I)
         """
@@ -374,7 +374,8 @@ class Trainer:
             
         y = torch.zeros(xlo.size()[0]) # dummy variable; we do not use labels
         xlo, xhi, y = xlo.to(self.device), xhi.to(self.device), y.to(self.device)
-        D = {'z0': xlo, 'z1': xhi, 'cond': xlo, 'z_noise': torch.randn_like(xhi), 'y': y}
+        
+        D = {'z0': torch.zeros_like(xlo), 'z1': xhi-xlo, 'cond': xlo, 'z_noise': torch.randn_like(xhi), 'y': y}
         
         if time == 'unif':
             D['t'] = self.time_dist.sample(sample_shape = (xhi.shape[0],)).squeeze().type_as(D['z1'])
@@ -400,7 +401,8 @@ class Trainer:
         assert self.model.training
         model_out = self.model(D['zt'], D['t'], D['y'], cond = D['cond'])
         target = self.target_function(D)
-        loss = (model_out - target).pow(2).sum(-1).sum(-1).sum(-1) # using full squared loss here
+        # weights = (1-D['t'])[:,None,None,None]
+        loss = ((model_out - target)).pow(2).sum(-1).sum(-1).sum(-1) # using full squared loss here
         return loss.mean()
     
     def clip_grad_norm(self, model, max_grad_norm = 1e+5):
@@ -521,7 +523,7 @@ class Trainer:
 
         inputs = test_input[:cur_idx,...]
         truth = test_truth[:cur_idx,...]
-        results =  test_result[:cur_idx,...]
+        results =  test_result[:cur_idx,...] + inputs
         results = torch.cat([inputs, truth, results], dim = 1) * self.original_avg_pixel_norm
         return results
     
@@ -546,7 +548,6 @@ class Trainer:
             f = lambda x: wandb.Image(x)
         else:
             f = lambda x: wandb.Image(x.squeeze())
-        
         if config.use_wandb:
             wandb.log({f'energy spectrum (test on {which} data)': f(tensor_img)}, step = self.global_step) 
     
@@ -585,7 +586,7 @@ class Loggers:
         date = str(datetime.datetime.now())
         self.log_base = date[date.find("-"):date.rfind(".")].replace("-", "").replace(":", "").replace(" ", "_")
         self.log_name = 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + '_' + self.log_base
-        self.verbose_log_name = 'numdata'+ str(config.num_dataset) + 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + 'sz' + str(config.base_lr).replace(".","") + 'max' + str(config.max_steps) + '_' + self.log_base
+        self.verbose_log_name = 'zero_Follmerg1_numdata'+ str(config.num_dataset) + 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + 'sz' + str(config.base_lr).replace(".","") + 'max' + str(config.max_steps) + '_' + self.log_base
         
     def is_type_for_logging(self, x):
         if isinstance(x, int):
@@ -658,9 +659,9 @@ class Config:
         self.base_lr = 2*1e-4
         self.max_steps = 100
         self.t_min_train = 0
-        self.t_max_train = 1
+        self.t_max_train = 1-0.0001
         self.t_min_sample = 0
-        self.t_max_sample = 1
+        self.t_max_sample = 1-0.0001
         self.EMsteps = 200
         self.print_loss_every = 20 
         self.print_gradnorm_every =  20
@@ -713,7 +714,7 @@ def get_parser():
     parser.add_argument("--data_subsampling_ratio", type=float, default=1.0)
     parser.add_argument("--batch_size", type=int, default=100)
     parser.add_argument("--noise_strength", type=float, default=1.0)
-    parser.add_argument("--base_lr", type=float, default=2e-4)
+    parser.add_argument("--base_lr", type=float, default=1e-4)
     parser.add_argument("--lo_size", type=int, default=128)
     parser.add_argument("--hi_size", type=int, default=128)
     parser.add_argument("--time_lag", type=int, default=2)
@@ -721,7 +722,7 @@ def get_parser():
     parser.add_argument("--sample_every", type=int, default=1000)
     parser.add_argument("--test_every", type=int, default=1000)
     parser.add_argument("--save_model_every", type=int, default=2000)
-    parser.add_argument("--num_dataset",type=int,default=1)
+    parser.add_argument("--num_dataset",type=int,default=10)
     parser.add_argument('--use_wandb', type = int, default = 1) # 1 is use_wandb, and 0 is not use_wandb
     args = parser.parse_args()
     return args
@@ -807,4 +808,3 @@ trainer.fit()
 #     PATH = PATH_file[:PATH_file.rfind("/")]
 #     save_path =  PATH + f"/output_{n_samples}ensem_{n_iter}steps_{n_data}input_EM200.pt"
 #     torch.save(test_result.cpu(), save_path)
-

@@ -144,13 +144,13 @@ class Interpolants:
         return 0 * torch.ones_like(t)
         
     def g(self, t):
-        return config.avg_pixel_norm * config.noise_strength* (1-t).sqrt() * torch.ones_like(t)
+        return config.avg_pixel_norm * config.noise_strength* 1.0 * torch.ones_like(t)
 
     def h(self, t): # 1/eps * int_0^t r_t^2/r_u^2 g_u^2 du
-        return (2*t - t**2) * torch.ones_like(t)
+        return t * torch.ones_like(t)
 
     def eps(self):  # int_0^1 r_1^2/r_u^2 g_u^2 du
-        return (config.avg_pixel_norm * config.noise_strength)**2 * 0.5
+        return (config.avg_pixel_norm * config.noise_strength)**2 * 1.0
     
     def beta(self, t): # beta_t = h_t
         return self.h(t)
@@ -196,8 +196,7 @@ class Interpolants:
 
         z_coef = self.wide(self.g(t)**2 / self.eps())
 
-        # tmp = - self.g(t)**2 * (self.h(t)/(self.eps()*(1-self.h(t)))).sqrt()
-        tmp = - (self.h(t)/(self.eps())).sqrt() # because g(t)^2 = sqrt(1-h(t)) = 1-t
+        tmp = - self.g(t)**2 * (self.h(t)/(self.eps()*(1-self.h(t)))).sqrt()
         noise_coef = self.wide(tmp)
         return (z_coef * z1) + (noise_coef * noise)
 
@@ -402,7 +401,8 @@ class Trainer:
         assert self.model.training
         model_out = self.model(D['zt'], D['t'], D['y'], cond = D['cond'])
         target = self.target_function(D)
-        loss = (model_out - target).pow(2).sum(-1).sum(-1).sum(-1) # using full squared loss here
+        weights = (1-D['t'])[:,None,None,None]
+        loss = (weights*(model_out - target)).pow(2).sum(-1).sum(-1).sum(-1) # using full squared loss here
         return loss.mean()
     
     def clip_grad_norm(self, model, max_grad_norm = 1e+5):
@@ -543,7 +543,11 @@ class Trainer:
         
         tensor_img = T.ToTensor()(Image.open(spectrum_save_name))
 
-        f = lambda x: wandb.Image(x[None,...])
+        # f = lambda x: wandb.Image(x[None,...])
+        if tensor_img.dim() == 3:
+            f = lambda x: wandb.Image(x)
+        else:
+            f = lambda x: wandb.Image(x.squeeze())
         if config.use_wandb:
             wandb.log({f'energy spectrum (test on {which} data)': f(tensor_img)}, step = self.global_step) 
     
@@ -582,7 +586,7 @@ class Loggers:
         date = str(datetime.datetime.now())
         self.log_base = date[date.find("-"):date.rfind(".")].replace("-", "").replace(":", "").replace(" ", "_")
         self.log_name = 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + '_' + self.log_base
-        self.verbose_log_name = 'Follmergsqrt1-t_numdata'+ str(config.num_dataset) + 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + 'sz' + str(config.base_lr).replace(".","") + 'max' + str(config.max_steps) + '_' + self.log_base
+        self.verbose_log_name = 'zero_Follmerg1_lossw1-t_numdata'+ str(config.num_dataset) + 'lag' + str(config.time_lag) + 'noise' + str(config.noise_strength) + 'lo' + str(config.lo_size) + 'hi' + str(config.hi_size) + 'sz' + str(config.base_lr).replace(".","") + 'max' + str(config.max_steps) + '_' + self.log_base
         
     def is_type_for_logging(self, x):
         if isinstance(x, int):
@@ -655,9 +659,9 @@ class Config:
         self.base_lr = 2*1e-4
         self.max_steps = 100
         self.t_min_train = 0
-        self.t_max_train = 1 - 0.0001
+        self.t_max_train = 1-0.00001
         self.t_min_sample = 0
-        self.t_max_sample = 1 - 0.0001
+        self.t_max_sample = 1-0.00001
         self.EMsteps = 200
         self.print_loss_every = 20 
         self.print_gradnorm_every =  20
@@ -731,9 +735,9 @@ args.use_wandb = bool(args.use_wandb)
 
 
 ###### data location
-# list_data_loc = ["/data_file.pt"]
-list_suffix = [f"0{i}" for i in np.arange(1,args.num_dataset)] + ["10"]
-list_data_loc = [f"/scratch/mh5113/forecasting/new_simulations_lag_05_term" + i + ".pt" for i in list_suffix]
+list_suffix = [f"0{i}" for i in np.arange(1,args.num_dataset+1)]
+# list_data_loc = [f"/scratch/mh5113/forecasting/new_simulations_lag_05_term" + i + ".pt" for i in list_suffix]
+list_data_loc = [f"/scratch/yc3400/forecasting/NSEdata/data_file" + i + ".pt" for i in list_suffix]
 if args.num_dataset < len(list_data_loc): 
     list_data_loc = list_data_loc[:args.num_dataset]
     args.num_dataset = len(list_data_loc)
