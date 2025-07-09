@@ -3,7 +3,6 @@ __pycache__/
 
 *.DS_Store
 
-*.pdf
 *.npz
 test_*
 .ipynb*/
