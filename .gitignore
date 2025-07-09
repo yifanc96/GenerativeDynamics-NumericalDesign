@@ -1,9 +1,10 @@
 __pycache__/
 */__pycache__/
-
+*checkpoint*
 *.DS_Store
-
+*log*
 *.npz
 test_*
 .ipynb*/
-data*
+data
+*wand*
