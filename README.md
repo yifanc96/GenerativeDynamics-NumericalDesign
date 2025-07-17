@@ -1,5 +1,7 @@
 # GenerativeDynamics - NumericalDesign
-Design of interpolation schedules, noises, and sources in flow and diffusion-based generative models with a focus on data distributions arising from science and engineering, such as solutions to stochastic Allen-Cahn and Navier-Stokes equations (based on training neural networks; need to run on GPUs and we provide the data) that have a wide range of Fourier spectra and are thus numerically ill-conditioned. 
+Design of interpolation schedules, noises, and sources in flow and diffusion-based generative models with a focus on data distributions arising from science and engineering.
+
+Examples include solutions to stochastic Allen-Cahn and Navier-Stokes equations (based on training neural networks; need to run on GPUs and we provide the data) that have a wide range of Fourier spectra and are thus numerically ill-conditioned. 
 
 We also present proof-of-concept examples (based on explicit formulas; these examples can be run directly on CPUs) using Gaussian measures and mixtures in high dimensions.
 
