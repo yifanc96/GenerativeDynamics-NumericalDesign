@@ -9,4 +9,4 @@ Design of interpolation schedules, noises, and sources in flow and diffusion-bas
 
 
 #### Other helpful repository
-For general codes, please refer to [interpolant](https://github.com/interpolants). Specifically for probabilistic forecasting applications, please refer to [forecasting](https://github.com/interpolants/forecasting).
+For general codes of stochastic interpolants, please refer to [interpolant](https://github.com/interpolants). Specifically for probabilistic forecasting applications, please refer to [forecasting](https://github.com/interpolants/forecasting).
