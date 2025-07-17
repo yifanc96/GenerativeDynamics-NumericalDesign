@@ -8,9 +8,9 @@ We also present proof-of-concept examples (based on explicit formulas; these exa
 We adopt the framework of stochastic interpolants in the codes.
 
 #### Relevant papers
-- Numerical design through min-Lip: check xxx
-- Design of noise and schedules for ill-conditioned distributions: check xxx
-- Generative diffusions from a point source: check xxx
+- [Numerical design through optimizing Lipschitzness](): check xxx
+- [Design of noise and schedules for numerically ill-conditioned distributions](): check xxx
+- [Generative diffusions from a point source](): check xxx
 
 
 #### Dataset
