@@ -11,6 +11,9 @@ We adopt the framework of stochastic interpolants in the codes.
 - Generative diffusions from a point source: check xxx
 
 
+#### Dataset
+- [Stochastic Navier-Stokes](https://zenodo.org/records/10939479)
+- [Stochastic Allen-Cahn](https://zenodo.org/uploads/15708250)
 
 #### Other helpful repository
 For general codes of stochastic interpolants, please refer to [interpolant](https://github.com/interpolants). Specifically for probabilistic forecasting applications, please refer to [forecasting](https://github.com/interpolants/forecasting).
