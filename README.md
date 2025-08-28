@@ -8,9 +8,9 @@ We also present proof-of-concept examples (these are based on explicit formulas;
 We adopt the framework of stochastic interpolants in the codes.
 
 #### Relevant papers
-- [Numerical design through optimizing Lipschitzness]()
-- [Design of noise and schedules for numerically ill-conditioned distributions]()
-- [Generative diffusions from a point source]()
+- [Lipschitz-Guided Design of Interpolation Schedules]()
+- [Scale-Adaptive Design of Generative Flows]()
+- [Generative Diffusions from A Point Source]()
 ```
 @misc{chen2024probabilistic,
       title={Probabilistic Forecasting with Stochastic Interpolants and F\"ollmer Processes}, 
