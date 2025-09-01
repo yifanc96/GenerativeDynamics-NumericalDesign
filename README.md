@@ -27,4 +27,4 @@ All implementations adopt the stochastic interpolants framework.
 - [Stochastic Allen-Cahn](https://zenodo.org/uploads/15708250)
 
 #### Other helpful repository
-For general codes of stochastic interpolants, please refer to [interpolant](https://github.com/interpolants). Specifically for probabilistic forecasting applications, please refer to [forecasting](https://github.com/interpolants/forecasting).
+For general codes of stochastic interpolants, please refer to [interpolant](https://github.com/interpolants). Specifically for probabilistic forecasting applications, please refer to [forecasting](https://github.com/interpolants/forecasting). I'll thank [Mark Goldstein](https://marikgoldstein.github.io/) for helping me in the initial phase of these codes.
