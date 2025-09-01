@@ -10,7 +10,7 @@ All implementations adopt the stochastic interpolants framework.
 #### Relevant papers
 - [Lipschitz-Guided Design of Interpolation Schedules]()
 - [Scale-Adaptive Design of Generative Flows]()
-- Generative Diffusions from A Point Source and F\"ollmer Processes
+- Generative Diffusions from A Point Source and Follmer Processes
 ```
 @misc{chen2024probabilistic,
       title={Probabilistic Forecasting with Stochastic Interpolants and F\"ollmer Processes}, 
