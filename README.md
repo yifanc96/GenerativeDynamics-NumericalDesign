@@ -1,7 +1,7 @@
 # GenerativeDynamics - NumericalDesign
 Design of interpolation schedules, noise, and source terms in flow and diffusion-based generative models, with a focus on data distributions from science and engineering applications.
 
-The Git Repository includes examples based on solutions to stochastic Allen-Cahn and Navier-Stokes equations. These examples involve training neural networks on datasets with wide-ranging Fourier spectra, making them numerically ill-conditioned. The neural network training codes require GPU computation and come with provided datasets. Note that these codes will need modification to run on your system (specifically, updating data paths and save locations).
+The Git Repository includes examples based on solutions to stochastic Allen-Cahn and Navier-Stokes equations. These examples involve training neural networks on datasets with wide-ranging Fourier spectra, making them numerically ill-conditioned. The neural network training codes require GPU computation, and the repository comes with provided datasets. Note that these codes will need modification to run on your system (specifically, updating data paths, save locations, and wandb locations).
 
 We also present proof-of-concept examples using Gaussian measures and mixtures in high dimensions. These examples are based on explicit formulas and can be run directly on CPUs without modification.
 
