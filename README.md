@@ -21,4 +21,4 @@ All implementations adopt the stochastic interpolants framework.
 #### Other helpful repository
 For general codes of stochastic interpolants, please refer to [interpolant](https://github.com/interpolants). Specifically for probabilistic forecasting applications, please refer to [forecasting](https://github.com/interpolants/forecasting). There, the point source is the current state, and the generative model forecasts the next state. In this repository, the point source is always zero, and the generative model forecasts the difference between the next and current states.
 
-I'll thank [Mark Goldstein](https://marikgoldstein.github.io/) for helping me in the initial phase of the forecasting code.
+I'll thank [Mark Goldstein](https://marikgoldstein.github.io/) for helping me in the initial phase of the forecasting code, and [Mengjian Hua](https://scholar.google.com/citations?user=llRFiBEAAAAJ&hl=en) for preparing the stochastic Navier-Stokes dataset.
