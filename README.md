@@ -8,7 +8,7 @@ We also present proof-of-concept examples using Gaussian measures and mixtures i
 All implementations adopt the stochastic interpolants framework.
 
 #### Relevant papers
-- [Lipschitz-Guided Design of Interpolation Schedules]()
+- [Lipschitz-Guided Design of Interpolation Schedules](https://arxiv.org/abs/2509.01629)
 - [Scale-Adaptive Design of Generative Flows]()
 - [Design of Point Source and Optimization of Diffusion Coefficients to Yield Follmer Processes](https://openreview.net/pdf/9dc86834c15cdb6e583ef6154ec5fa6c51ecee8e.pdf)
 ```
