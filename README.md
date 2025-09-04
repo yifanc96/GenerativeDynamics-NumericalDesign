@@ -9,9 +9,22 @@ All implementations adopt the stochastic interpolants framework.
 
 #### Relevant papers
 - [Lipschitz-Guided Design of Interpolation Schedules](https://arxiv.org/abs/2509.01629)
-- [Scale-Adaptive Design of Generative Flows]()
+- [Scale-Adaptive Design of Generative Flows](https://arxiv.org/abs/2509.02971)
 - [Design of Point Source and Optimization of Diffusion Coefficients to Yield Follmer Processes](https://openreview.net/pdf/9dc86834c15cdb6e583ef6154ec5fa6c51ecee8e.pdf)
 ```
+@article{chen2025lipschitz,
+  title={Lipschitz-Guided Design of Interpolation Schedules in Generative Models},
+  author={Chen, Yifan and Vanden-Eijnden, Eric and Xu, Jiawei},
+  journal={arXiv preprint arXiv:2509.01629},
+  year={2025}
+}
+
+@article{chen2025scale,
+  title={Scale-Adaptive Generative Flows for Multiscale Scientific Data},
+  author={Chen, Yifan and Vanden-Eijnden, Eric},
+  journal={arXiv preprint arXiv:2509.02971},
+  year={2025}
+}
 ```
 
 #### Dataset
