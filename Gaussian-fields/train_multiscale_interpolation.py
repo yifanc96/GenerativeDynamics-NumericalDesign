@@ -349,74 +349,82 @@ class MultiscaleInterpolant:
 
 
 class Sampler:
+    """
+    Multiscale sampler that integrates each phase INDEPENDENTLY.
+
+    The mask velocity field is piecewise in t: across phase boundaries the
+    active band changes, so the velocity has a jump. RK4/Heun/EM steps must
+    therefore stay strictly inside one phase — otherwise k4 (or the second
+    Heun stage) lands at t=k+1 and evaluates the *next* phase's velocity,
+    silently mixing two unrelated fields and producing huge spurious high-k
+    energy. (Earlier _make_tgrid concatenated phases and let one RK4 step
+    span a boundary; that was a bug.)
+
+    Each phase k is integrated over [k+t_min, k+1-t_min] with `n_k` points
+    placed either uniformly or at Chebyshev (cosine-clustered) nodes. The
+    final state of phase k is the initial state of phase k+1 — same total
+    work as before, just no boundary-spanning steps.
+    """
     def __init__(self, num_masks):
         self.num_masks = num_masks
 
     def _f(self, model, zt, t_scalar):
-        """Fast path: scalar t, uses forward_scalar_t."""
         return model.forward_scalar_t(zt, t_scalar.item() if isinstance(t_scalar, torch.Tensor) else t_scalar)
 
-    def _make_tgrid(self, steps, t_min=1e-3, t_max=1 - 1e-3, dtype=torch.float32):
-        """Build time grid that respects scale boundaries.
-        Distributes steps evenly per scale so no RK4 step crosses a boundary."""
+    def _phase_grids(self, steps, t_min=1e-3, grid_mode='uniform'):
+        """Return list of per-phase node tensors. Each grid is strictly inside (k, k+1).
+        grid_mode in {'uniform', 'cosine'}."""
         K = self.num_masks
-        if K == 1:
-            return torch.linspace(t_min, t_max, steps, dtype=dtype)
-        # steps_per_scale, distributing remainder to earlier scales
         base = steps // K
-        remainder = steps % K
-        tgrid = []
+        rem = steps % K
+        grids = []
         for k in range(K):
-            n_k = base + (1 if k < remainder else 0)
+            n_k = base + (1 if k < rem else 0)
             if n_k == 0:
                 continue
-            lo = k + t_min if k == 0 else float(k)
-            hi = k + 1 - t_min if k == K - 1 else float(k + 1)
-            # n_k points in [lo, hi), last scale includes hi
-            pts = torch.linspace(lo, hi, n_k + 1, dtype=dtype)[:-1]  # exclude right endpoint
-            tgrid.append(pts)
-        return torch.cat(tgrid)
+            if grid_mode == 'cosine':
+                i = torch.arange(n_k + 1, dtype=torch.float64)
+                s = 0.5 - 0.5 * torch.cos(math.pi * i / n_k)
+            else:
+                s = torch.linspace(0, 1, n_k + 1, dtype=torch.float64)
+            s = t_min + (1 - 2 * t_min) * s
+            grids.append((k + s).float())
+        return grids
 
     @torch.no_grad()
-    def EM(self, z0, model, steps, t_min=1e-3, t_max=1 - 1e-3):
-        tgrid = self._make_tgrid(steps, t_min, t_max).type_as(z0)
+    def EM(self, z0, model, steps, t_min=1e-3, t_max=1 - 1e-3, grid_mode='uniform'):
+        grids = self._phase_grids(steps, t_min=t_min, grid_mode=grid_mode)
         zt = z0
-        for i in range(len(tgrid)):
-            t_val = tgrid[i]
-            dt = tgrid[i + 1] - t_val if i + 1 < len(tgrid) else (self.num_masks * t_max - t_val)
-            zt = zt + self._f(model, zt, t_val) * dt
+        for nodes in grids:
+            for i in range(len(nodes) - 1):
+                tv = float(nodes[i]); dtv = float(nodes[i + 1] - nodes[i])
+                zt = zt + self._f(model, zt, tv) * dtv
         return zt
 
     @torch.no_grad()
-    def Heun(self, z0, model, steps, t_min=1e-3, t_max=1 - 1e-3):
-        """Heun's method (RK2) — each step stays within one scale band."""
-        tgrid = self._make_tgrid(steps, t_min, t_max).type_as(z0)
+    def Heun(self, z0, model, steps, t_min=1e-3, t_max=1 - 1e-3, grid_mode='uniform'):
+        grids = self._phase_grids(steps, t_min=t_min, grid_mode=grid_mode)
         zt = z0
-        for i in range(len(tgrid)):
-            t_val = tgrid[i]
-            dt = tgrid[i + 1] - t_val if i + 1 < len(tgrid) else (self.num_masks * t_max - t_val)
-            tv = t_val.item()
-            dtv = dt.item()
-            k1 = self._f(model, zt, tv)
-            k2 = self._f(model, zt + dt * k1, tv + dtv)
-            zt = zt + 0.5 * dt * (k1 + k2)
+        for nodes in grids:
+            for i in range(len(nodes) - 1):
+                tv = float(nodes[i]); dtv = float(nodes[i + 1] - nodes[i])
+                k1 = self._f(model, zt, tv)
+                k2 = self._f(model, zt + dtv * k1, tv + dtv)
+                zt = zt + 0.5 * dtv * (k1 + k2)
         return zt
 
     @torch.no_grad()
-    def RK4(self, z0, model, steps, t_min=1e-3, t_max=1 - 1e-3):
-        """Classic RK4 — each step stays within one scale band."""
-        tgrid = self._make_tgrid(steps, t_min, t_max).type_as(z0)
+    def RK4(self, z0, model, steps, t_min=1e-3, t_max=1 - 1e-3, grid_mode='uniform'):
+        grids = self._phase_grids(steps, t_min=t_min, grid_mode=grid_mode)
         zt = z0
-        for i in range(len(tgrid)):
-            t_val = tgrid[i]
-            dt = tgrid[i + 1] - t_val if i + 1 < len(tgrid) else (self.num_masks * t_max - t_val)
-            tv = t_val.item()
-            dtv = dt.item()
-            k1 = self._f(model, zt, tv)
-            k2 = self._f(model, zt + 0.5 * dt * k1, tv + 0.5 * dtv)
-            k3 = self._f(model, zt + 0.5 * dt * k2, tv + 0.5 * dtv)
-            k4 = self._f(model, zt + dt * k3, tv + dtv)
-            zt = zt + (dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+        for nodes in grids:
+            for i in range(len(nodes) - 1):
+                tv = float(nodes[i]); dtv = float(nodes[i + 1] - nodes[i])
+                k1 = self._f(model, zt, tv)
+                k2 = self._f(model, zt + 0.5 * dtv * k1, tv + 0.5 * dtv)
+                k3 = self._f(model, zt + 0.5 * dtv * k2, tv + 0.5 * dtv)
+                k4 = self._f(model, zt + dtv * k3, tv + dtv)
+                zt = zt + (dtv / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
         return zt
 
 
@@ -481,7 +489,8 @@ class Trainer:
             ).to(self.device)
 
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=cfg.base_lr)
-        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=cfg.max_steps)
+        self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.optimizer, T_max=cfg.max_steps, eta_min=cfg.base_lr * 0.01)
         self.time_dist = torch.distributions.Uniform(low=cfg.t_min_train, high=cfg.t_max_train)
         self.global_step = 0
 
