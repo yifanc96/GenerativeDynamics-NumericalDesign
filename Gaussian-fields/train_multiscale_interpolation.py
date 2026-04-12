@@ -225,9 +225,9 @@ def estimate_conditional_variances(data, masks):
         X = torch.stack([data[b][coarse_idx] for b in range(N)])  # (N, n_coarse)
 
         X_aug = torch.cat([torch.ones(N, 1), X], dim=1)
-        XtX = X_aug.T @ X_aug + 1e-4 * torch.eye(X_aug.shape[1])
+        XtX = X_aug.T @ X_aug + 1e-6 * torch.eye(X_aug.shape[1])
         XtY = X_aug.T @ Y
-        beta, _ = torch.solve(XtY, XtX)
+        beta = torch.linalg.solve(XtX, XtY)
         residual = Y - X_aug @ beta
         variances.append(torch.var(residual, dim=0).mean().item())
 
@@ -659,7 +659,7 @@ class Config:
         self.print_loss_every = 50
         self.test_every = 1000
         self.num_eval = 100
-        self.eval_step_counts = [2, 5, 10, 20]
+        self.eval_step_counts = None  # set in main based on num_masks
 
         # single-net architecture
         self.unet_channels = 32
@@ -710,6 +710,11 @@ if __name__ == '__main__':
     config.multi_channels = args.multi_channels
     config.noise_scale = args.noise_scale
     config.use_weighted_loss = not args.no_weighted_loss
+
+    # Set eval step counts as multiples of num_masks
+    K = config.num_masks
+    config.eval_step_counts = [K, 2*K, 4*K, 8*K]
+    config.num_eval = 200
 
     os.makedirs(config.save_dir, exist_ok=True)
 

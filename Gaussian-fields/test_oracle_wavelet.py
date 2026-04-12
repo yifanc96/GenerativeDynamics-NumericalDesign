@@ -162,14 +162,14 @@ for k in range(num_phases):
         Sigma_FC = Sigma_t[F][:, C_idx]
         Sigma_CC = Sigma_t[C_idx][:, C_idx]
         ridge = 1e-12 * Sigma_CC.diag().mean().item()
-        M_op = torch.solve(Sigma_FC.T, Sigma_CC + ridge * torch.eye(len(C_idx), dtype=Sigma_CC.dtype))[0].T
+        M_op = torch.linalg.solve(Sigma_CC + ridge * torch.eye(len(C_idx), dtype=Sigma_CC.dtype), Sigma_FC.T).T
         Sigma_FF_C = Sigma_FF - M_op @ Sigma_FC.T
     else:
         M_op = None
         Sigma_FF_C = Sigma_FF.clone()
     Sigma_FF_C = 0.5 * (Sigma_FF_C + Sigma_FF_C.T)
 
-    e_all = torch.symeig(Sigma_FF_C, eigenvectors=False)[0].numpy()
+    e_all = torch.linalg.eigvalsh(Sigma_FF_C).numpy()
     e_pos = e_all[e_all > 0]
     floor = max(e_pos.max() * 1e-10, 0.0) if len(e_pos) else 0.0
     eigs = e_pos[e_pos > floor]
@@ -213,7 +213,7 @@ class WaveletOracleVelocity(nn.Module):
         nF = len(F)
         Total = (a * a * sigma2) * torch.eye(nF, dtype=Sigma_FF_C.dtype) + (b * b) * Sigma_FF_C
         diff = (z_F - b * mu).T
-        Xt = torch.solve(diff, Total)[0]
+        Xt = torch.linalg.solve(Total, diff)
         z1_hat = mu + b * (Sigma_FF_C @ Xt).T
         z0_hat = (a * sigma2) * Xt.T
         v_F = z1_hat - z0_hat

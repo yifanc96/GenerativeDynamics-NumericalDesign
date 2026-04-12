@@ -93,7 +93,7 @@ for k in range(num_masks):
         Sigma_FC = Sigma[F][:, C]
         Sigma_CC = Sigma[C][:, C]
         ridge = 1e-12 * Sigma_CC.diag().mean().item()
-        M_op = torch.solve(Sigma_FC.T, Sigma_CC + ridge * torch.eye(len(C), dtype=Sigma_CC.dtype))[0].T
+        M_op = torch.linalg.solve(Sigma_CC + ridge * torch.eye(len(C), dtype=Sigma_CC.dtype), Sigma_FC.T).T
         Sigma_FF_C = Sigma_FF - M_op @ Sigma_FC.T
     else:
         M_op = None
@@ -107,7 +107,7 @@ for k in range(num_masks):
     # No eigendecomposition needed; just average the diagonal.
     sigma2 = float(Sigma_FF_C.diag().mean().item())
 
-    eigs = torch.symeig(Sigma_FF_C, eigenvectors=False)[0].numpy()
+    eigs = torch.linalg.eigvalsh(Sigma_FF_C).numpy()
     eigs = eigs[eigs > eigs.max() * 1e-10]
     cn = float(eigs.max() / eigs.min()) if len(eigs) > 1 else 1.0
     print(f'  phase {k}: |F|={len(F):4d} |C|={len(C):4d}  cond={cn:.2e}  '
@@ -149,7 +149,7 @@ class OracleVelocity(nn.Module):
         nF = len(F)
         Total = (a * a * sigma2) * torch.eye(nF, dtype=Sigma_FF_C.dtype) + (b * b) * Sigma_FF_C
         diff = (z_F - b * mu).T
-        Xt = torch.solve(diff, Total)[0]
+        Xt = torch.linalg.solve(Total, diff)
         z1_hat = mu + b * (Sigma_FF_C @ Xt).T
         z0_hat = (a * sigma2) * Xt.T
         v_F = z1_hat - z0_hat            # linear schedule, a' = -1, b' = 1
@@ -218,7 +218,7 @@ class DesignedOracleVelocity(nn.Module):
         nF = len(F)
         Total = (a * a * sigma2) * torch.eye(nF, dtype=Sigma_FF_C.dtype) + (b * b) * Sigma_FF_C
         diff = (z_F - b * mu).T
-        Xt = torch.solve(diff, Total)[0]
+        Xt = torch.linalg.solve(Total, diff)
         z1_hat = mu + b * (Sigma_FF_C @ Xt).T
         z0_hat = (a * sigma2) * Xt.T
         # designed velocity:  v = a' z0 + b' z1   (from It = a z0 + b z1, Rt = a' z0 + b' z1)
@@ -313,7 +313,7 @@ phases_d = []
 M_k_list = []
 for ph in phases:
     Sigma_FF_C = ph['Sigma_FF_C']
-    eigs = torch.symeig(Sigma_FF_C, eigenvectors=False)[0].numpy()
+    eigs = torch.linalg.eigvalsh(Sigma_FF_C).numpy()
     eigs = eigs[eigs > 1e-12]
     if len(eigs) > 1:
         sigma2_d = float(eigs.max())
@@ -335,10 +335,10 @@ for k, ph in enumerate(phases_d):
     noise_std_designed += math.sqrt(ph['sigma2']) * band_2d
 
 def make_z0_designed(B):
-    eps = torch.randn(B, 1, G, G)
-    return eps * noise_std_designed.unsqueeze(0).unsqueeze(0)
+    eps = torch.randn(B, 1, G, G, dtype=torch.float64)
+    return eps * noise_std_designed.unsqueeze(0).unsqueeze(0).double()
 
-import sys as _sys; _sys.exit(0)  # designed-schedule path is float32-only; skip
+# designed schedule test follows
 oracle_d = DesignedOracleVelocity(hier, phases_d, M_k_list)
 
 # Custom RK4 that clips s away from {0, 1} in EVERY phase (designed schedule

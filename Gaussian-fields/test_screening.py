@@ -40,11 +40,11 @@ def conditional_cov(Sigma, F_idx, C_idx):
     Sigma_CC = Sigma[C_idx][:, C_idx]
     # solve Sigma_CC @ X = Sigma_CF (where Sigma_CF = Sigma_FC.T)
     Sigma_CF = Sigma[C_idx][:, F_idx]
-    X, _ = torch.solve(Sigma_CF, Sigma_CC + 1e-8 * torch.eye(len(C_idx)))
+    X = torch.linalg.solve(Sigma_CC + 1e-8 * torch.eye(len(C_idx)), Sigma_CF)
     return Sigma_FF - Sigma_FC @ X
 
 def cond_number(M):
-    eigs = torch.symeig(M, eigenvectors=False)[0]
+    eigs = torch.linalg.eigvalsh(M)
     pos = eigs[eigs > 1e-12].numpy()
     if len(pos) < 2: return 1.0
     return pos.max() / pos.min()

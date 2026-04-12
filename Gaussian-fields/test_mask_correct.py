@@ -93,7 +93,7 @@ for k in range(K):
     if len(resolved_idx) == 0:
         # Phase 0: marginal (no coarser bands)
         block = Sigma[band_idx][:, band_idx]
-        cond = torch.symeig(block, eigenvectors=False)[0]
+        cond = torch.linalg.eigvalsh(block)
         pos = cond[cond > 1e-12].numpy()
         cond_num = pos.max() / pos.min() if len(pos) > 1 else 1.0
         print('  phase %d: %d pixels, NO conditioning (coarsest), cond = %.2e' % (k, len(band_idx), cond_num))
@@ -106,9 +106,9 @@ for k in range(K):
 
         # Cov(F | C) = Sigma_FF - Sigma_FC @ Sigma_CC^{-1} @ Sigma_CF
         try:
-            X, _ = torch.solve(Sigma_CF, Sigma_CC + 1e-8 * torch.eye(len(resolved_idx)))
+            X = torch.linalg.solve(Sigma_CC + 1e-8 * torch.eye(len(resolved_idx)), Sigma_CF)
             cond_cov = Sigma_FF - Sigma_FC @ X
-            eigs = torch.symeig(cond_cov, eigenvectors=False)[0]
+            eigs = torch.linalg.eigvalsh(cond_cov)
             pos = eigs[eigs > 1e-12].numpy()
             cond_num = pos.max() / pos.min() if len(pos) > 1 else 1.0
 
