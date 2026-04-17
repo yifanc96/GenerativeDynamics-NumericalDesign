@@ -22,26 +22,30 @@ from unet import Unet
 
 # ─── Data loading ────────────────────────────────────────────────────────────
 
-def load_ns_data(data_loc, hi_size, batch_size, train_test_split):
+def load_ns_data(data_locs, hi_size, batch_size, train_test_split):
     """
-    Load NS vorticity data. File contains (data, time) tuple.
-    data: (num_traj, num_snapshots, Nx, Ny)
+    Load NS vorticity data from one or more files.
+    Each file contains (data, time) tuple with data: (num_traj, num_snapshots, Nx, Ny).
     For unconditional generation, flatten trajectories into individual snapshots.
     """
-    data_raw, time_raw = torch.load(data_loc)
-    Ntj, Nts, Nx, Ny = data_raw.shape
-    print(f"[Data] raw: {Ntj} trajectories x {Nts} snapshots x {Nx}x{Ny}")
+    if isinstance(data_locs, str):
+        data_locs = [data_locs]
 
-    avg_pixel_norm = torch.norm(data_raw, dim=(2, 3), p='fro').mean() / np.sqrt(Nx * Ny)
-    print(f"[Data] avg pixel norm (original): {avg_pixel_norm:.4f}")
-    data_raw = data_raw / avg_pixel_norm
+    avg_pixel_norm = 3.0679163932800293  # fixed across datasets
 
-    # Flatten to (Ntj*Nts, Nx, Ny) and downsample
-    data = data_raw.reshape(-1, Nx, Ny)
-    if hi_size != Nx:
-        data = nn.functional.interpolate(data.unsqueeze(1), size=(hi_size, hi_size), mode='bilinear').squeeze(1)
-    data = data[:, None, :, :]  # (N, 1, H, W)
-    print(f"[Data] flattened & resized: {data.shape}, std={data.std():.4f}")
+    all_data = []
+    for loc in data_locs:
+        data_raw, _ = torch.load(loc)
+        Ntj, Nts, Nx, Ny = data_raw.shape
+        print(f"[Data] {loc}: {Ntj} traj x {Nts} snapshots x {Nx}x{Ny}")
+        data_raw = data_raw / avg_pixel_norm
+        data = data_raw.reshape(-1, Nx, Ny)
+        if hi_size != Nx:
+            data = nn.functional.interpolate(data.unsqueeze(1), size=(hi_size, hi_size), mode='bilinear').squeeze(1)
+        all_data.append(data)
+
+    data = torch.cat(all_data, dim=0)[:, None, :, :]  # (N, 1, H, W)
+    print(f"[Data] total: {data.shape}, std={data.std():.4f}")
 
     num_train = int(data.shape[0] * train_test_split)
     print(f"[Data] train={num_train}, test={data.shape[0] - num_train}")
@@ -149,9 +153,10 @@ class Sampler:
     @torch.no_grad()
     def EM(self, z0, model, steps):
         tgrid = torch.linspace(self.config.t_min_sample, self.config.t_max_sample, steps).type_as(z0)
-        dt = tgrid[1] - tgrid[0]
         zt = z0
-        for t_val in tgrid:
+        for i in range(len(tgrid) - 1):
+            t_val = tgrid[i]
+            dt = tgrid[i+1] - tgrid[i]
             zt = zt + self._f(model, zt, t_val) * dt
         return zt
 
@@ -159,9 +164,10 @@ class Sampler:
     def RK4(self, z0, model, steps):
         """Hand-written classic RK4."""
         tgrid = torch.linspace(self.config.t_min_sample, self.config.t_max_sample, steps).type_as(z0)
-        dt = tgrid[1] - tgrid[0]
         zt = z0
-        for t_val in tgrid:
+        for i in range(len(tgrid) - 1):
+            t_val = tgrid[i]
+            dt = tgrid[i+1] - tgrid[i]
             k1 = self._f(model, zt, t_val)
             k2 = self._f(model, zt + 0.5 * dt * k1, t_val + 0.5 * dt)
             k3 = self._f(model, zt + 0.5 * dt * k2, t_val + 0.5 * dt)
@@ -176,7 +182,8 @@ class Logger:
     def __init__(self, config):
         date = str(datetime.datetime.now())
         self.log_base = date[date.find("-"):date.rfind(".")].replace("-", "").replace(":", "").replace(" ", "_")
-        self.name = f"NS_datanoise_hi{config.hi_size}_lr{config.base_lr}_{self.log_base}"
+        floss_tag = '_floss' if config.fourier_loss else ''
+        self.name = f"NS_datanoise_hi{config.hi_size}_lr{config.base_lr}{floss_tag}_{self.log_base}"
 
     def setup_wandb(self, config):
         if config.use_wandb:
@@ -201,11 +208,28 @@ class Trainer:
         self.time_dist = torch.distributions.Uniform(low=config.t_min_train, high=config.t_max_train)
         self.global_step = 0
         self.prev_batch = None
+        if config.fourier_loss:
+            self._precompute_fourier_weights()
+
+    def _precompute_fourier_weights(self):
+        """Compute per-mode inverse-variance weights from training data.
+        w(k) = 1/Sigma(k)^alpha, where alpha controls reweighting strength.
+        """
+        alpha = self.config.fourier_loss_alpha
+        data = self.train_data.squeeze(1)  # (N, L, L)
+        fhat = torch.fft.fftn(data, dim=(1, 2), norm='ortho')
+        sigma_k = (fhat.abs() ** 2).mean(dim=0)  # (L, L)
+        w = 1.0 / torch.clamp(sigma_k, min=1e-6).pow(alpha)
+        L = data.shape[-1]
+        w = w * (L * L) / w.sum()
+        self.fourier_weights = w[None, None, :, :].to(self.device)
+        print(f"[FourierLoss] alpha={alpha}, weight range: [{w.min():.4e}, {w.max():.4e}], "
+              f"sigma_k range: [{sigma_k.min():.4e}, {sigma_k.max():.4e}]")
 
     def prepare_data(self):
         cfg = self.config
         self.train_loader, self.test_loader, self.train_data, self.test_data, self.avg_pixel_norm = \
-            load_ns_data(cfg.data_loc, cfg.hi_size, cfg.batch_size, cfg.train_test_split)
+            load_ns_data(cfg.data_locs, cfg.hi_size, cfg.batch_size, cfg.train_test_split)
 
     def get_noise(self, batch_data):
         B = batch_data.shape[0]
@@ -220,7 +244,13 @@ class Trainer:
         zt = Interpolants.It(z0, z1, t)
         target = Interpolants.Rt(z0, z1)
         pred = self.model(zt, t)
-        return (pred - target).pow(2).sum(dim=(1, 2, 3)).mean()
+        err = pred - target
+        if self.config.fourier_loss:
+            err_fft = torch.fft.fftn(err, dim=(2, 3), norm='ortho')
+            weighted = self.fourier_weights * err_fft.abs().pow(2)
+            return weighted.sum(dim=(1, 2, 3)).mean()
+        else:
+            return err.pow(2).sum(dim=(1, 2, 3)).mean()
 
     def fit(self):
         cfg = self.config
@@ -283,10 +313,16 @@ class Trainer:
         truth_sq = truth.squeeze(1)  # (N, H, W)
         kvals, enst_truth, ener_truth = get_energy_spectrum(truth_sq)
 
-        # Data-dependent noise from training data
-        perm = torch.randperm(self.train_data.shape[0])
-        noise_src = self.train_data[perm[:cfg.batch_size]].to(self.device)
-        z0 = make_data_dependent_noise(noise_src, num_eval)
+        # Data-dependent noise: each chunk uses a fresh random batch
+        z0_chunks = []
+        remaining = num_eval
+        while remaining > 0:
+            chunk = min(cfg.batch_size, remaining)
+            perm = torch.randperm(self.train_data.shape[0])
+            noise_src = self.train_data[perm[:cfg.batch_size]].to(self.device)
+            z0_chunks.append(make_data_dependent_noise(noise_src, chunk))
+            remaining -= chunk
+        z0 = torch.cat(z0_chunks, dim=0)
 
         step_counts = cfg.eval_step_counts
         results = {}
@@ -299,20 +335,38 @@ class Trainer:
                 _, enst_gen, ener_gen = get_energy_spectrum(gen_sq)
 
                 std_ratio = gen_sq.std().item() / (truth_sq.std().item() + 1e-12)
+
+                # Per-band relative errors: low (k<8), mid (8<=k<24), high (k>=24)
+                bands = {'low': kvals < 8, 'mid': (kvals >= 8) & (kvals < 24), 'high': kvals >= 24}
+                band_metrics = {}
+                for bname, mask in bands.items():
+                    if mask.sum() == 0:
+                        continue
+                    enst_err = np.mean(np.abs(enst_truth[mask] - enst_gen[mask]) / (np.abs(enst_truth[mask]) + 1e-12))
+                    ener_err = np.mean(np.abs(ener_truth[mask] - ener_gen[mask]) / (np.abs(ener_truth[mask]) + 1e-12))
+                    band_metrics[bname] = (enst_err, ener_err)
+
+                # Overall (for backward compat)
                 enst_rel = np.mean(np.abs(enst_truth - enst_gen) / (np.abs(enst_truth) + 1e-12))
                 ener_rel = np.mean(np.abs(ener_truth - ener_gen) / (np.abs(ener_truth) + 1e-12))
 
                 key = f"{tag}{nsteps}"
                 results[key] = dict(enst_gen=enst_gen, ener_gen=ener_gen, gen_sq=gen_sq,
-                                    std_ratio=std_ratio, enst_rel=enst_rel, ener_rel=ener_rel)
+                                    std_ratio=std_ratio, enst_rel=enst_rel, ener_rel=ener_rel,
+                                    band_metrics=band_metrics)
 
-                print(f"    {tag} steps={nsteps:3d}:  enst_relErr={enst_rel:.4f}  ener_relErr={ener_rel:.4f}  std_ratio={std_ratio:.4f}")
+                band_str = '  '.join(f"{b}: enst={v[0]:.4f} ener={v[1]:.4f}" for b, v in band_metrics.items())
+                print(f"    {tag} steps={nsteps:3d}:  std_ratio={std_ratio:.4f}  {band_str}")
                 if cfg.use_wandb:
-                    wandb.log({
+                    log_dict = {
                         f"enstrophy_relErr/{tag}_steps{nsteps}": enst_rel,
                         f"energy_relErr/{tag}_steps{nsteps}": ener_rel,
                         f"std_ratio/{tag}_steps{nsteps}": std_ratio,
-                    }, step=self.global_step)
+                    }
+                    for bname, (enst_err, ener_err) in band_metrics.items():
+                        log_dict[f"enstrophy_relErr_{bname}/{tag}_steps{nsteps}"] = enst_err
+                        log_dict[f"energy_relErr_{bname}/{tag}_steps{nsteps}"] = ener_err
+                    wandb.log(log_dict, step=self.global_step)
 
         # ── Spectrum + sample plot ──
         import seaborn as sns
@@ -356,7 +410,7 @@ class Config:
         self.wandb_entity = 'yifanc96'
 
         # data
-        self.data_loc = '/home/chen/research/data/new_simulations_lag_05_term.pt'
+        self.data_locs = ['../NSdata/data_file.pt']
         self.hi_size = 128
         self.C = 1
         self.batch_size = 100
@@ -366,10 +420,10 @@ class Config:
         self.base_lr = 2e-4
         self.max_steps = 50000
         self.cosine_scheduler = True
-        self.t_min_train = 0
-        self.t_max_train = 1
-        self.t_min_sample = 0
-        self.t_max_sample = 1
+        self.t_min_train = 1e-3
+        self.t_max_train = 1 - 1e-3
+        self.t_min_sample = 1e-3
+        self.t_max_sample = 1 - 1e-3
         self.print_loss_every = 50
         self.test_every = 2000
         self.eval_step_counts = [2, 5, 10, 20, 50]
@@ -385,6 +439,8 @@ class Config:
         self.unet_random_fourier_features = False
 
         self.save_dir = 'results/ns_data_dep_noise'
+        self.fourier_loss = False
+        self.fourier_loss_alpha = 1.0
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
@@ -398,9 +454,14 @@ if __name__ == '__main__':
     p.add_argument('--lr', type=float, default=2e-4)
     p.add_argument('--gpu', type=int, default=1)
     p.add_argument('--test_every', type=int, default=2000)
-    p.add_argument('--data_loc', type=str, default='/home/chen/research/data/new_simulations_lag_05_term.pt')
+    p.add_argument('--data_locs', type=str, nargs='+', default=['../NSdata/data_file.pt'])
+    p.add_argument('--num_dataset', type=int, default=None, help='shortcut: use first N of the 5 NS data files')
     p.add_argument('--save_dir', type=str, default='results/ns_data_dep_noise')
+    p.add_argument('--unet_channels', type=int, default=32)
+    p.add_argument('--unet_dim_mults', type=int, nargs='+', default=[1, 2, 2, 2])
     p.add_argument('--no_wandb', action='store_true')
+    p.add_argument('--fourier_loss', action='store_true')
+    p.add_argument('--fourier_loss_alpha', type=float, default=1.0)
     args = p.parse_args()
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
@@ -411,9 +472,17 @@ if __name__ == '__main__':
     config.max_steps = args.max_steps
     config.base_lr = args.lr
     config.test_every = args.test_every
-    config.data_loc = args.data_loc
+    if args.num_dataset is not None:
+        suffixes = ['', '02', '03', '04', '05']
+        config.data_locs = [f'../NSdata/data_file{s}.pt' for s in suffixes[:args.num_dataset]]
+    else:
+        config.data_locs = args.data_locs
     config.save_dir = args.save_dir
+    config.unet_channels = args.unet_channels
+    config.unet_dim_mults = tuple(args.unet_dim_mults)
     config.use_wandb = not args.no_wandb
+    config.fourier_loss = args.fourier_loss
+    config.fourier_loss_alpha = args.fourier_loss_alpha
 
     os.makedirs(config.save_dir, exist_ok=True)
 

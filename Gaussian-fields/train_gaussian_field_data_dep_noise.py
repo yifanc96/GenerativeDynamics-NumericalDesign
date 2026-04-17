@@ -124,9 +124,10 @@ class Sampler:
     def EM(self, z0, model, steps):
         """Euler integration."""
         tgrid = torch.linspace(self.config.t_min_sample, self.config.t_max_sample, steps).type_as(z0)
-        dt = tgrid[1] - tgrid[0]
         zt = z0
-        for t_val in tgrid:
+        for i in range(len(tgrid) - 1):
+            t_val = tgrid[i]
+            dt = tgrid[i+1] - tgrid[i]
             zt = zt + self._f(model, zt, t_val) * dt
         return zt
 
@@ -134,9 +135,10 @@ class Sampler:
     def RK4(self, z0, model, steps):
         """Hand-written classic RK4."""
         tgrid = torch.linspace(self.config.t_min_sample, self.config.t_max_sample, steps).type_as(z0)
-        dt = tgrid[1] - tgrid[0]
         zt = z0
-        for t_val in tgrid:
+        for i in range(len(tgrid) - 1):
+            t_val = tgrid[i]
+            dt = tgrid[i+1] - tgrid[i]
             k1 = self._f(model, zt, t_val)
             k2 = self._f(model, zt + 0.5 * dt * k1, t_val + 0.5 * dt)
             k3 = self._f(model, zt + 0.5 * dt * k2, t_val + 0.5 * dt)
