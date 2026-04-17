@@ -1,11 +1,9 @@
 """
-Flow matching for 1D Allen-Cahn with data-dependent noise.
+Flow matching for 2D Navier-Stokes (unconditional) with standard Gaussian base.
 
-Noise construction: given data {x_i} from the next batch,
-  z0_j = (1/sqrt(N)) * sum_i (x_i - x_bar) * xi_{i,j},  xi_{i,j} ~ N(0,1)
+z0 ~ N(0, I),  I_t = (1-t)*z0 + t*z1,  R_t = -z0 + z1
 
-This gives noise with the empirical covariance of the data, making the
-learned drift more well-conditioned — so coarse integration (few steps) suffices.
+Baseline for comparison with data-dependent noise approach.
 """
 
 import os, sys, math, datetime
@@ -18,55 +16,75 @@ import wandb
 from time import time as timer
 import scipy.stats as stats
 
-from unet1D import Unet1D
+from unet import Unet
 
 # ─── Data loading ────────────────────────────────────────────────────────────
 
-def load_allen_cahn_data(loc, grid_size, batch_size, train_test_split):
-    """Load Allen-Cahn samples from .npy file."""
-    data_raw = np.load(loc)
-    print(f"[Data] raw shape={data_raw.shape}, dtype={data_raw.dtype}")
-    torch_data = torch.from_numpy(data_raw).float()
-    torch_data = torch_data.reshape(-1, torch_data.shape[-1])
-    print(f"[Data] flattened shape={torch_data.shape}")
-    norm_per_pixel = torch.norm(torch_data, dim=1, p='fro').mean() / torch_data.shape[-1]
-    print(f"[Data] norm per pixel={norm_per_pixel:.4f}")
+def load_ns_data(data_locs, hi_size, batch_size, train_test_split):
+    """
+    Load NS vorticity data from one or more files.
+    Each file contains (data, time) tuple with data: (num_traj, num_snapshots, Nx, Ny).
+    For unconditional generation, flatten trajectories into individual snapshots.
+    """
+    if isinstance(data_locs, str):
+        data_locs = [data_locs]
 
-    # (N, 1, grid_size)
-    torch_data = torch_data[:, None, :grid_size]
-    num_train = int(torch_data.shape[0] * train_test_split)
-    print(f"[Data] train={num_train}, test={torch_data.shape[0] - num_train}")
+    avg_pixel_norm = 3.0679163932800293  # fixed across datasets
 
-    train_loader = DataLoader(TensorDataset(torch_data[:num_train]), batch_size=batch_size, shuffle=True, drop_last=True)
-    test_loader = DataLoader(TensorDataset(torch_data[num_train:]), batch_size=batch_size, shuffle=False)
-    return train_loader, test_loader, torch_data[:num_train], torch_data[num_train:]
+    all_data = []
+    for loc in data_locs:
+        data_raw, _ = torch.load(loc)
+        Ntj, Nts, Nx, Ny = data_raw.shape
+        print(f"[Data] {loc}: {Ntj} traj x {Nts} snapshots x {Nx}x{Ny}")
+        data_raw = data_raw / avg_pixel_norm
+        data = data_raw.reshape(-1, Nx, Ny)
+        if hi_size != Nx:
+            data = nn.functional.interpolate(data.unsqueeze(1), size=(hi_size, hi_size), mode='bilinear').squeeze(1)
+        all_data.append(data)
+
+    data = torch.cat(all_data, dim=0)[:, None, :, :]  # (N, 1, H, W)
+    print(f"[Data] total: {data.shape}, std={data.std():.4f}")
+
+    num_train = int(data.shape[0] * train_test_split)
+    print(f"[Data] train={num_train}, test={data.shape[0] - num_train}")
+
+    train_loader = DataLoader(TensorDataset(data[:num_train]), batch_size=batch_size, shuffle=True, drop_last=True)
+    test_loader = DataLoader(TensorDataset(data[num_train:]), batch_size=batch_size, shuffle=False)
+    return train_loader, test_loader, data[:num_train], data[num_train:], avg_pixel_norm
 
 
-# ─── 1D energy spectrum ─────────────────────────────────────────────────────
+# ─── 2D energy spectrum ─────────────────────────────────────────────────────
 
-def get_energy_spectrum1d(data):
-    """Compute 1D energy spectrum. data: (N, L) or (N, 1, L)."""
-    if data.dim() == 3:
-        data = data.squeeze(1)
-    fhat = torch.fft.fft(data, dim=1, norm='forward')
-    power = (fhat.abs()**2).mean(dim=0)
+def get_energy_spectrum(data):
+    """
+    Compute radially-averaged enstrophy and energy spectra.
+    data: (N, H, W) numpy or torch tensor.
+    """
+    if isinstance(data, torch.Tensor):
+        data = data.cpu()
+    fhat = torch.fft.fftn(data, dim=(1, 2), norm='forward')
+    fourier_amp = (torch.abs(fhat)**2 * (2 * np.pi)).mean(dim=0)
     npix = data.shape[-1]
     kfreq = np.fft.fftfreq(npix) * npix
-    return np.abs(kfreq), power.cpu().numpy()
+    kx, ky = np.meshgrid(kfreq, kfreq)
+    knrm = np.sqrt(kx**2 + ky**2).flatten()
 
+    fourier_flat = fourier_amp.numpy().flatten()
+    laplace = knrm**2
+    laplace[0] = 1.0
+    energy_flat = fourier_flat / laplace
 
-# ─── Data-dependent noise (1D) ──────────────────────────────────────────────
+    kbins = np.arange(0.5, npix // 2 + 1, 1.)
+    kvals = 0.5 * (kbins[1:] + kbins[:-1])
+    area_weight = np.pi * (kbins[1:]**2 - kbins[:-1]**2)
 
-def make_data_dependent_noise_1d(next_batch, batch_size):
-    """
-    z0_j = (1/sqrt(N)) * sum_i (x_i - x_bar) * xi_{i,j},  xi ~ N(0,1)
-    next_batch: (N, 1, L),  returns: (batch_size, 1, L)
-    """
-    N = next_batch.shape[0]
-    centered = next_batch - next_batch.mean(dim=0, keepdim=True)  # (N, 1, L)
-    xi = torch.randn(N, batch_size, device=next_batch.device)     # (N, batch_size)
-    noise = torch.einsum('ncl,nb->bcl', centered, xi) / math.sqrt(N)
-    return noise
+    enstrophy, _, _ = stats.binned_statistic(knrm, fourier_flat, statistic='mean', bins=kbins)
+    enstrophy *= area_weight
+
+    energy, _, _ = stats.binned_statistic(knrm, energy_flat, statistic='mean', bins=kbins)
+    energy *= area_weight
+
+    return kvals, enstrophy, energy
 
 
 # ─── Network ─────────────────────────────────────────────────────────────────
@@ -74,19 +92,22 @@ def make_data_dependent_noise_1d(next_batch, batch_size):
 class Velocity(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.net = Unet1D(
-            config.unet_channels,
-            dim_mults=config.unet_dim_mults,
-            channels=config.C,
-            out_dim=config.C,
+        self.net = Unet(
+            num_classes=1, in_channels=config.C, out_channels=config.C,
+            dim=config.unet_channels, dim_mults=config.unet_dim_mults,
+            resnet_block_groups=config.unet_resnet_block_groups,
             learned_sinusoidal_cond=config.unet_learned_sinusoidal_cond,
             random_fourier_features=config.unet_random_fourier_features,
+            learned_sinusoidal_dim=config.unet_learned_sinusoidal_dim,
+            attn_dim_head=config.unet_attn_dim_head,
+            attn_heads=config.unet_attn_heads,
+            use_classes=False,
         )
         n_params = sum(p.numel() for p in self.parameters())
         print(f"[Network] {n_params:,} parameters")
 
     def forward(self, zt, t):
-        return self.net(zt, t)
+        return self.net(zt, t, classes=None)
 
 
 # ─── Interpolants ────────────────────────────────────────────────────────────
@@ -95,7 +116,7 @@ class Interpolants:
     """I_t = (1-t)*z0 + t*z1,  R_t = -z0 + z1"""
     @staticmethod
     def It(z0, z1, t):
-        tw = t[:, None, None]
+        tw = t[:, None, None, None]
         return (1 - tw) * z0 + tw * z1
 
     @staticmethod
@@ -145,7 +166,7 @@ class Logger:
     def __init__(self, config):
         date = str(datetime.datetime.now())
         self.log_base = date[date.find("-"):date.rfind(".")].replace("-", "").replace(":", "").replace(" ", "_")
-        self.name = f"AllenCahn_datanoise_grid{config.grid_size}_lr{config.base_lr}_{self.log_base}"
+        self.name = f"NS_gaussbase_hi{config.hi_size}_lr{config.base_lr}_{self.log_base}"
 
     def setup_wandb(self, config):
         if config.use_wandb:
@@ -169,28 +190,17 @@ class Trainer:
         self.sampler = Sampler(config)
         self.time_dist = torch.distributions.Uniform(low=config.t_min_train, high=config.t_max_train)
         self.global_step = 0
-        self.prev_batch = None
 
     def prepare_data(self):
         cfg = self.config
-        self.train_loader, self.test_loader, self.train_data, self.test_data = \
-            load_allen_cahn_data(cfg.data_loc, cfg.grid_size, cfg.batch_size, cfg.train_test_split)
-
-    def get_noise(self, batch_data):
-        """Data-dependent noise from previous batch; fallback to iid Gaussian."""
-        B = batch_data.shape[0]
-        if self.prev_batch is None:
-            z0 = torch.randn(B, 1, self.config.grid_size, device=self.device)
-        else:
-            z0 = make_data_dependent_noise_1d(self.prev_batch, B)
-        self.prev_batch = batch_data.clone()
-        return z0
+        self.train_loader, self.test_loader, self.train_data, self.test_data, self.avg_pixel_norm = \
+            load_ns_data(cfg.data_locs, cfg.hi_size, cfg.batch_size, cfg.train_test_split)
 
     def loss_function(self, z0, z1, t):
         zt = Interpolants.It(z0, z1, t)
         target = Interpolants.Rt(z0, z1)
         pred = self.model(zt, t)
-        return (pred - target).pow(2).sum(dim=(1, 2)).mean()
+        return (pred - target).pow(2).sum(dim=(1, 2, 3)).mean()
 
     def fit(self):
         cfg = self.config
@@ -204,7 +214,7 @@ class Trainer:
                     break
 
                 batch_data = batch_data.to(self.device)
-                z0 = self.get_noise(batch_data)
+                z0 = torch.randn_like(batch_data)
                 z1 = batch_data
                 t = self.time_dist.sample((z1.shape[0],)).to(self.device)
 
@@ -212,7 +222,7 @@ class Trainer:
                 loss = self.loss_function(z0, z1, t)
                 self.optimizer.zero_grad()
                 loss.backward()
-                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1e5)
+                grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1e4)
                 self.optimizer.step()
                 self.scheduler.step()
 
@@ -228,6 +238,13 @@ class Trainer:
 
                 self.global_step += 1
 
+            # adjust LR at epoch boundary
+            if cfg.cosine_scheduler:
+                scale = self.global_step / cfg.max_steps
+                lr = cfg.base_lr * 0.5 * (1. + math.cos(math.pi * scale))
+                for pg in self.optimizer.param_groups:
+                    pg['lr'] = lr
+
         print("[Training] Done.")
         self.test_model()
         save_path = os.path.join(cfg.save_dir, 'model_final.pt')
@@ -241,16 +258,13 @@ class Trainer:
         cfg = self.config
         self.model.eval()
 
-        # Use a batch from test data
-        num_eval = min(500, self.test_data.shape[0])
-        truth = self.test_data[:num_eval].to(self.device)
-        truth_np = truth.cpu()
-        kvals, spec_truth = get_energy_spectrum1d(truth_np)
+        num_eval = min(200, self.test_data.shape[0])
+        truth = self.test_data[:num_eval]
+        truth_sq = truth.squeeze(1)  # (N, H, W)
+        kvals, enst_truth, ener_truth = get_energy_spectrum(truth_sq)
 
-        # Data-dependent noise from training data
-        perm = torch.randperm(self.train_data.shape[0])
-        noise_src = self.train_data[perm[:cfg.batch_size]].to(self.device)
-        z0 = make_data_dependent_noise_1d(noise_src, num_eval)
+        # Standard Gaussian noise
+        z0 = torch.randn(num_eval, 1, cfg.hi_size, cfg.hi_size, device=self.device)
 
         step_counts = cfg.eval_step_counts
         results = {}
@@ -259,47 +273,70 @@ class Trainer:
             for tag, sample_fn in [('RK', lambda z: self.sampler.RK4(z, self.model, nsteps)),
                                    ('EM', lambda z: self.sampler.EM(z, self.model, nsteps))]:
                 gen = sample_fn(z0.clone())
-                gen_np = gen.cpu()
-                _, spec_gen = get_energy_spectrum1d(gen_np)
+                gen_sq = gen.squeeze(1).cpu()
+                _, enst_gen, ener_gen = get_energy_spectrum(gen_sq)
 
-                std_ratio = gen_np.std().item() / (truth_np.std().item() + 1e-12)
-                # Only compare positive-k part
-                half = len(spec_truth) // 2
-                spec_rel = np.mean(np.abs(spec_truth[:half] - spec_gen[:half]) / (np.abs(spec_truth[:half]) + 1e-12))
-                spec_l1 = np.mean(np.abs(spec_truth[:half] - spec_gen[:half]))
+                std_ratio = gen_sq.std().item() / (truth_sq.std().item() + 1e-12)
+
+                # Per-band relative errors: low (k<8), mid (8<=k<24), high (k>=24)
+                bands = {'low': kvals < 8, 'mid': (kvals >= 8) & (kvals < 24), 'high': kvals >= 24}
+                band_metrics = {}
+                for bname, mask in bands.items():
+                    if mask.sum() == 0:
+                        continue
+                    enst_err = np.mean(np.abs(enst_truth[mask] - enst_gen[mask]) / (np.abs(enst_truth[mask]) + 1e-12))
+                    ener_err = np.mean(np.abs(ener_truth[mask] - ener_gen[mask]) / (np.abs(ener_truth[mask]) + 1e-12))
+                    band_metrics[bname] = (enst_err, ener_err)
+
+                # Overall
+                enst_rel = np.mean(np.abs(enst_truth - enst_gen) / (np.abs(enst_truth) + 1e-12))
+                ener_rel = np.mean(np.abs(ener_truth - ener_gen) / (np.abs(ener_truth) + 1e-12))
+
                 key = f"{tag}{nsteps}"
-                results[key] = dict(spec_gen=spec_gen, gen_np=gen_np,
-                                    std_ratio=std_ratio, spec_rel=spec_rel, spec_l1=spec_l1)
-                print(f"    {tag} steps={nsteps:3d}:  spec_relErr={spec_rel:.4f}  spec_L1={spec_l1:.6f}  std_ratio={std_ratio:.4f}")
-                if cfg.use_wandb:
-                    wandb.log({
-                        f"spec_relErr/{tag}_steps{nsteps}": spec_rel,
-                        f"spec_L1/{tag}_steps{nsteps}": spec_l1,
-                        f"std_ratio/{tag}_steps{nsteps}": std_ratio,
-                    }, step=self.global_step)
+                results[key] = dict(enst_gen=enst_gen, ener_gen=ener_gen, gen_sq=gen_sq,
+                                    std_ratio=std_ratio, enst_rel=enst_rel, ener_rel=ener_rel,
+                                    band_metrics=band_metrics)
 
-        # ── Spectrum plot ──
-        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-        half = len(kvals) // 2
+                band_str = '  '.join(f"{b}: enst={v[0]:.4f} ener={v[1]:.4f}" for b, v in band_metrics.items())
+                print(f"    {tag} steps={nsteps:3d}:  std_ratio={std_ratio:.4f}  {band_str}")
+                if cfg.use_wandb:
+                    log_dict = {
+                        f"enstrophy_relErr/{tag}_steps{nsteps}": enst_rel,
+                        f"energy_relErr/{tag}_steps{nsteps}": ener_rel,
+                        f"std_ratio/{tag}_steps{nsteps}": std_ratio,
+                    }
+                    for bname, (enst_err, ener_err) in band_metrics.items():
+                        log_dict[f"enstrophy_relErr_{bname}/{tag}_steps{nsteps}"] = enst_err
+                        log_dict[f"energy_relErr_{bname}/{tag}_steps{nsteps}"] = ener_err
+                    wandb.log(log_dict, step=self.global_step)
+
+        # ── Spectrum + sample plot ──
+        import seaborn as sns
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+        # Enstrophy spectrum
         ax = axes[0]
-        ax.semilogy(kvals[:half], spec_truth[:half], 'k-', lw=2, label='truth')
+        ax.loglog(kvals, enst_truth, 'k-', lw=2, label='truth')
         colors = plt.cm.viridis(np.linspace(0.2, 0.9, len(step_counts)))
         for i, ns in enumerate(step_counts):
-            ax.semilogy(kvals[:half], results[f'RK{ns}']['spec_gen'][:half], '--', color=colors[i], label=f'RK4 {ns}')
-            ax.semilogy(kvals[:half], results[f'EM{ns}']['spec_gen'][:half], ':', color=colors[i], alpha=0.5, label=f'EM {ns}')
-        ax.set_xlabel('k'); ax.set_ylabel('E(k)'); ax.legend(fontsize=6); ax.set_title('Energy Spectrum')
+            ax.loglog(kvals, results[f'RK{ns}']['enst_gen'], '--', color=colors[i], label=f'RK4 {ns}')
+        ax.set_xlabel('k'); ax.set_ylabel('Enstrophy'); ax.legend(fontsize=6); ax.set_title('Enstrophy Spectrum')
 
-        # Sample comparison
+        # Energy spectrum
         ax = axes[1]
-        nmax = step_counts[-1]
-        idx = 0
-        x = np.arange(cfg.grid_size)
-        ax.plot(x, truth_np[idx, 0].numpy(), 'k-', lw=2, label='truth')
-        ax.plot(x, results[f'RK{step_counts[0]}']['gen_np'][idx, 0].numpy(), '--', label=f'RK4 {step_counts[0]}')
-        ax.plot(x, results[f'RK{nmax}']['gen_np'][idx, 0].numpy(), ':', label=f'RK4 {nmax}')
-        ax.legend(fontsize=8); ax.set_title('Sample comparison')
-        plt.tight_layout()
+        ax.loglog(kvals, ener_truth, 'k-', lw=2, label='truth')
+        for i, ns in enumerate(step_counts):
+            ax.loglog(kvals, results[f'RK{ns}']['ener_gen'], '--', color=colors[i], label=f'RK4 {ns}')
+        ax.set_xlabel('k'); ax.set_ylabel('Energy'); ax.legend(fontsize=6); ax.set_title('Energy Spectrum')
 
+        # Sample visualization
+        nmax = step_counts[-1]
+        combined = torch.cat([truth_sq[0], results[f'RK{step_counts[0]}']['gen_sq'][0],
+                              results[f'RK{nmax}']['gen_sq'][0]], dim=1).numpy()
+        axes[2].imshow(combined, cmap=sns.cm.icefire, vmin=-2, vmax=2)
+        axes[2].set_title(f'Truth | RK4 {step_counts[0]} | RK4 {nmax}'); axes[2].axis('off')
+
+        plt.tight_layout()
         if cfg.use_wandb:
             wandb.log({"spectrum_comparison": wandb.Image(fig)}, step=self.global_step)
         plt.close()
@@ -314,19 +351,20 @@ class Config:
         self.wandb_entity = 'yifanc96'
 
         # data
-        self.data_loc = 'data/AllenCahn1D_grid64_samples.npy'
-        self.grid_size = 64
+        self.data_locs = ['../NSdata/data_file.pt']
+        self.hi_size = 128
         self.C = 1
-        self.batch_size = 1000
+        self.batch_size = 100
         self.train_test_split = 0.9
 
         # training
         self.base_lr = 2e-4
         self.max_steps = 50000
-        self.t_min_train = 0
-        self.t_max_train = 1
-        self.t_min_sample = 0
-        self.t_max_sample = 1
+        self.cosine_scheduler = True
+        self.t_min_train = 1e-3
+        self.t_max_train = 1 - 1e-3
+        self.t_min_sample = 1e-3
+        self.t_max_sample = 1 - 1e-3
         self.print_loss_every = 50
         self.test_every = 2000
         self.eval_step_counts = [2, 5, 10, 20, 50]
@@ -334,10 +372,14 @@ class Config:
         # architecture (medium, matching existing)
         self.unet_channels = 32
         self.unet_dim_mults = (1, 2, 2, 2)
+        self.unet_resnet_block_groups = 8
+        self.unet_learned_sinusoidal_dim = 32
+        self.unet_attn_dim_head = 32
+        self.unet_attn_heads = 4
         self.unet_learned_sinusoidal_cond = True
         self.unet_random_fourier_features = False
 
-        self.save_dir = 'results/allen_cahn_data_dep_noise'
+        self.save_dir = 'results/ns_gauss_base'
 
 
 # ─── Entry point ─────────────────────────────────────────────────────────────
@@ -345,27 +387,36 @@ class Config:
 if __name__ == '__main__':
     import argparse
     p = argparse.ArgumentParser()
-    p.add_argument('--grid_size', type=int, default=64)
-    p.add_argument('--batch_size', type=int, default=1000)
+    p.add_argument('--hi_size', type=int, default=128)
+    p.add_argument('--batch_size', type=int, default=100)
     p.add_argument('--max_steps', type=int, default=50000)
     p.add_argument('--lr', type=float, default=2e-4)
-    p.add_argument('--gpu', type=int, default=1)
+    p.add_argument('--gpu', type=int, default=0)
     p.add_argument('--test_every', type=int, default=2000)
-    p.add_argument('--data_loc', type=str, default='data/AllenCahn1D_grid64_samples.npy')
-    p.add_argument('--save_dir', type=str, default='results/allen_cahn_data_dep_noise')
+    p.add_argument('--data_locs', type=str, nargs='+', default=['../NSdata/data_file.pt'])
+    p.add_argument('--num_dataset', type=int, default=None, help='shortcut: use first N of the 5 NS data files')
+    p.add_argument('--save_dir', type=str, default='results/ns_gauss_base')
+    p.add_argument('--unet_channels', type=int, default=32)
+    p.add_argument('--unet_dim_mults', type=int, nargs='+', default=[1, 2, 2, 2])
     p.add_argument('--no_wandb', action='store_true')
     args = p.parse_args()
 
     os.environ['CUDA_VISIBLE_DEVICES'] = str(args.gpu)
 
     config = Config()
-    config.grid_size = args.grid_size
+    config.hi_size = args.hi_size
     config.batch_size = args.batch_size
     config.max_steps = args.max_steps
     config.base_lr = args.lr
     config.test_every = args.test_every
-    config.data_loc = args.data_loc
+    if args.num_dataset is not None:
+        suffixes = ['', '02', '03', '04', '05']
+        config.data_locs = [f'../NSdata/data_file{s}.pt' for s in suffixes[:args.num_dataset]]
+    else:
+        config.data_locs = args.data_locs
     config.save_dir = args.save_dir
+    config.unet_channels = args.unet_channels
+    config.unet_dim_mults = tuple(args.unet_dim_mults)
     config.use_wandb = not args.no_wandb
 
     os.makedirs(config.save_dir, exist_ok=True)
