@@ -24,21 +24,38 @@ def wasserstein_1d(a, b, p=2):
     return (diff.pow(p).mean().pow(1.0 / p)).item()
 
 
-def mmd_rbf(a, b, bandwidths=(0.1, 0.3, 1.0, 3.0), max_n=5000):
-    """Unbiased MMD^2 estimator with a mixture of RBF kernels."""
+def mmd_rbf(a, b, bandwidths=None, max_n=5000, use_median_heuristic=True):
+    """Biased (V-statistic) MMD^2 with a mixture of RBF kernels:
+        MMD^2_b = (1/n^2) sum k(x_i, x_j) + (1/m^2) sum k(y_i, y_j)
+                 - (2/(nm)) sum k(x_i, y_j)
+
+    The V-statistic is ALWAYS non-negative (unlike the unbiased U-statistic),
+    with an O(1/n) positive bias that vanishes at the sample sizes used here.
+    Using the biased estimator avoids misleading negative values while giving
+    interpretable magnitudes.
+
+    By default bandwidths are chosen by the median heuristic over the combined
+    sample (robust, scale-adapting). Passing an explicit tuple overrides that.
+    """
     a = a.reshape(-1, 1)[:max_n]
     b = b.reshape(-1, 1)[:max_n]
     n, m = a.shape[0], b.shape[0]
     def _pd(x, y): return (x.unsqueeze(1) - y.unsqueeze(0)).pow(2).sum(-1)
     d_aa, d_bb, d_ab = _pd(a, a), _pd(b, b), _pd(a, b)
+
+    if bandwidths is None and use_median_heuristic:
+        # Median of the pooled pairwise distances (a classical choice).
+        combined = torch.cat([d_aa.flatten(), d_bb.flatten(), d_ab.flatten()])
+        med = combined.median().clamp_min(1e-12).sqrt().item()
+        bandwidths = (0.5 * med, med, 2.0 * med)
+    elif bandwidths is None:
+        bandwidths = (0.3, 1.0, 3.0)
+
     mmd2 = 0.0
     for h in bandwidths:
-        k_aa = torch.exp(-d_aa / (2.0 * h * h))
-        k_bb = torch.exp(-d_bb / (2.0 * h * h))
-        k_ab = torch.exp(-d_ab / (2.0 * h * h))
-        k_aa = (k_aa.sum() - k_aa.diag().sum()) / (n * (n - 1))
-        k_bb = (k_bb.sum() - k_bb.diag().sum()) / (m * (m - 1))
-        k_ab = k_ab.mean()
+        k_aa = torch.exp(-d_aa / (2.0 * h * h)).mean()  # V-statistic (includes diag)
+        k_bb = torch.exp(-d_bb / (2.0 * h * h)).mean()
+        k_ab = torch.exp(-d_ab / (2.0 * h * h)).mean()
         mmd2 = mmd2 + (k_aa + k_bb - 2.0 * k_ab).item()
     return max(mmd2 / len(bandwidths), 0.0)
 

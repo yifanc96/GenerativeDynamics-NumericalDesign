@@ -77,11 +77,32 @@ composition; the only difference is $\hat b_\theta$ (network) vs $b^\star$
 
 Computed from $N_\text{samples} = 40{,}000$ EM samples ($N_\text{EM}=200$ steps) vs. ground-truth target samples. Error sources are independent from the path-KL MC (EM time-step error + sample-size MC noise):
 - 1D Wasserstein $W_1, W_2$ — sorted-diff estimator (unbiased given equal sample counts).
-- RBF-MMD — bandwidth mixture $\{0.1, 0.3, 1, 3\}$, unbiased estimator on a 5k subset.
+- RBF-MMD — **biased V-statistic** (always non-negative), bandwidth mixture $\{0.5\,h_\text{med},\, h_\text{med},\, 2\,h_\text{med}\}$ where $h_\text{med}$ is the median of pooled pairwise distances (median heuristic), 5k-sample subset. We use the biased form rather than the unbiased one because the unbiased estimator can take (slightly) negative values when the two samples are statistically indistinguishable under the chosen kernels; the biased V-statistic has a small $O(1/n)$ positive bias that is numerically negligible at $n=5000$ and yields an easy-to-read non-negative magnitude.
 - Moment errors $|\Delta\mu|$, $|\Delta\sigma|$, $|\Delta\text{skew}|$, $|\Delta\text{kurt}|$ (excess kurtosis).
 - Histogram KL — Gaussian KDE (Silverman's bandwidth) on a 400-point grid vs. analytic target density.
 
-## Results (5 seeds each, 20k training steps, $N_\text{MC}=80k$, $N_\text{samples}=40k$)
+## Numerics / integration
+
+### Training
+- Network: 3-layer MLP, hidden width 128, SiLU activations, Gaussian-Fourier time embedding of 64 features.
+- Optimizer: AdamW, learning rate $2\times 10^{-4}$, batch 512, gradient clip (L2) at 5.
+- Steps: $20{,}000$ per seed. Uniform $t$ sampling from $[t_{\min}, 1]$ with $t_{\min} = 10^{-3}$.
+- Loss: plain L2 DSM on target $x^\star - \sqrt{t}\,z$ (eq. 2.10). No weighting.
+- Seeds: 5 per target.
+
+### Sampling (for marginal metrics)
+- **Integrator**: Euler-Maruyama (first-order stochastic Euler), $N_\text{EM} = 200$ uniform steps on $[t_{\min}, 1 - t_{\min}]$ with $t_{\min} = 10^{-3}$.
+- **Initial condition**: $X_{t_{\min}} \sim \mathcal{N}(0,\,\gamma_{t_{\min}}^2\,I)$, i.e. we sample from the *interpolant marginal at $t_{\min}$* rather than the exact Dirac at 0. This absorbs the boundary singularity at $t=0$ ($\gamma_t$ has a $\sqrt{t}$ vanishing, so the drift is bounded but the SDE needs a nonzero-variance start).
+- Sample count $N_\text{samples} = 40{,}000$ per (seed, schedule) evaluation.
+- For ODE ($g = 0$) the noise step is skipped; all other schedules use the stochastic step.
+
+### Path-KL Monte-Carlo estimator
+- **Method**: plain MC over $(t, X_t)$ (see formula above). No time-grid — $t$ is drawn *uniformly at random*, so the MC estimator is unbiased (no $O(\Delta t)$ discretization error).
+- **Sample count** $N_\text{MC} = 80{,}000$ per (seed, schedule).
+- **Truncation**: integrate on $[t_{\min}, 1 - t_{\min}]$. For schedules with $g_t \to 0$ at an endpoint the integrand diverges there, so the reported value is a *truncated* path-KL — it understates the true $[0,1]$ integral but preserves the ordering across schedules.
+- **Baseline drift $b^\star$**: analytic for all three targets (Gaussian-mixture posterior); no truth bias.
+
+## Results (5 seeds each, 20k training steps, $N_\text{MC}=80k$, $N_\text{samples}=40k$, $N_\text{EM}=200$)
 
 ### Path-KL headline (Girsanov, log scale)
 
@@ -108,38 +129,34 @@ Per-metric winners highlighted **bold**. ODE ($g{=}0$) excluded from path-KL
 
 | schedule | path KL | marg KL | $W_1$ | $W_2$ | MMD$^2$ | $\|\Delta\mu\|$ | $\|\Delta\sigma\|$ | $\|\Delta\text{skew}\|$ | $\|\Delta\text{kurt}\|$ |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Föllmer $\sqrt{1-t^2}$ | **2.74e-2 ± 2.24e-2** | 1.26e-3 ± 1.04e-3 | 1.48e-2 ± 1.23e-2 | 1.74e-2 ± 1.08e-2 | 1.36e-4 ± 1.46e-4 | 1.30e-2 ± 1.35e-2 | **4.01e-3 ± 1.97e-3** | 4.85e-2 ± 8.71e-3 | 1.54e-2 ± 1.36e-2 |
-| baseline $1-t$ | 3.84e+0 ± 4.23e+0 | **9.30e-4 ± 5.77e-4** | **1.31e-2 ± 6.68e-3** | **1.51e-2 ± 6.15e-3** | **9.23e-6 ± 2.06e-5** | **1.17e-2 ± 7.73e-3** | 4.87e-3 ± 3.66e-3 | **9.02e-3 ± 1.14e-2** | **1.44e-2 ± 1.09e-2** |
-| $\sqrt{t(1-t)}$ | 3.12e-2 ± 2.39e-2 | 7.27e-2 ± 4.06e-3 | 1.08e-1 ± 4.19e-3 | 1.38e-1 ± 4.48e-3 | 5.98e-3 ± 4.36e-4 | 2.27e-2 ± 1.43e-2 | 1.35e-1 ± 4.14e-3 | 7.46e-2 ± 3.60e-2 | 1.01e-1 ± 4.61e-2 |
-| const $g{=}1$ | 9.58e-1 ± 1.04e+0 | 2.51e-2 ± 1.24e-2 | 8.28e-2 ± 3.75e-2 | 9.15e-2 ± 3.21e-2 | 2.99e-3 ± 2.28e-3 | 7.68e-2 ± 4.39e-2 | 2.14e-2 ± 2.03e-2 | 2.29e-1 ± 6.10e-2 | 1.30e-1 ± 1.04e-1 |
-| $\sqrt{t}$ | 8.72e-1 ± 9.31e-1 | 2.96e-2 ± 1.33e-2 | 8.90e-2 ± 3.95e-2 | 9.99e-2 ± 3.38e-2 | 2.94e-3 ± 1.95e-3 | 8.37e-2 ± 4.60e-2 | 2.86e-2 ± 2.18e-2 | 2.16e-1 ± 6.65e-2 | 1.55e-1 ± 1.24e-1 |
-| ODE $g{=}0$ | — | 3.42e-1 ± 8.38e-3 | 2.47e-1 ± 4.03e-3 | 3.13e-1 ± 4.35e-3 | 2.50e-2 ± 8.10e-4 | 4.06e-2 ± 1.29e-2 | 3.09e-1 ± 3.83e-3 | 1.00e-1 ± 5.47e-2 | 1.11e-1 ± 8.31e-2 |
+| Föllmer $\sqrt{1-t^2}$ | **2.74e-2 ± 2.24e-2** | 1.26e-3 ± 1.04e-3 | 1.48e-2 ± 1.23e-2 | 1.74e-2 ± 1.08e-2 | 3.95e-4 ± 2.48e-4 | 1.30e-2 ± 1.35e-2 | **4.01e-3 ± 1.97e-3** | 4.85e-2 ± 8.71e-3 | 1.54e-2 ± 1.36e-2 |
+| baseline $1-t$ | 3.84e+0 ± 4.23e+0 | **9.30e-4 ± 5.77e-4** | **1.31e-2 ± 6.68e-3** | **1.51e-2 ± 6.15e-3** | **1.42e-4 ± 1.20e-4** | **1.17e-2 ± 7.73e-3** | 4.87e-3 ± 3.66e-3 | **9.02e-3 ± 1.14e-2** | **1.44e-2 ± 1.09e-2** |
+| $\sqrt{t(1-t)}$ | 3.12e-2 ± 2.39e-2 | 7.27e-2 ± 4.06e-3 | 1.08e-1 ± 4.19e-3 | 1.38e-1 ± 4.48e-3 | 9.82e-3 ± 6.89e-4 | 2.27e-2 ± 1.43e-2 | 1.35e-1 ± 4.14e-3 | 7.46e-2 ± 3.60e-2 | 1.01e-1 ± 4.61e-2 |
+| const $g{=}1$ | 9.58e-1 ± 1.04e+0 | 2.51e-2 ± 1.24e-2 | 8.28e-2 ± 3.75e-2 | 9.15e-2 ± 3.21e-2 | 4.93e-3 ± 3.70e-3 | 7.68e-2 ± 4.39e-2 | 2.14e-2 ± 2.03e-2 | 2.29e-1 ± 6.10e-2 | 1.30e-1 ± 1.04e-1 |
+| $\sqrt{t}$ | 8.72e-1 ± 9.31e-1 | 2.96e-2 ± 1.33e-2 | 8.90e-2 ± 3.95e-2 | 9.99e-2 ± 3.38e-2 | 4.82e-3 ± 3.14e-3 | 8.37e-2 ± 4.60e-2 | 2.86e-2 ± 2.18e-2 | 2.16e-1 ± 6.65e-2 | 1.55e-1 ± 1.24e-1 |
+| ODE $g{=}0$ | — | 3.42e-1 ± 8.38e-3 | 2.47e-1 ± 4.03e-3 | 3.13e-1 ± 4.35e-3 | 3.98e-2 ± 1.23e-3 | 4.06e-2 ± 1.29e-2 | 3.09e-1 ± 3.83e-3 | 1.00e-1 ± 5.47e-2 | 1.11e-1 ± 8.31e-2 |
 
 #### Target B — bimodal GMM
 
 | schedule | path KL | marg KL | $W_1$ | $W_2$ | MMD$^2$ | $\|\Delta\mu\|$ | $\|\Delta\sigma\|$ | $\|\Delta\text{skew}\|$ | $\|\Delta\text{kurt}\|$ |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Föllmer $\sqrt{1-t^2}$ | **3.27e-2 ± 6.19e-3** | **1.10e-2 ± 1.70e-3** | 2.55e-2 ± 1.23e-2 | 4.01e-2 ± 1.71e-2 | 3.02e-4 ± 2.77e-4 | 1.36e-2 ± 1.34e-2 | 1.60e-2 ± 1.23e-2 | 1.84e-2 ± 9.69e-3 | 5.57e-3 ± 3.92e-3 |
-| baseline $1-t$ | 4.42e+0 ± 9.43e-1 | 1.19e-2 ± 1.69e-3 | **1.96e-2 ± 8.68e-3** | **3.06e-2 ± 1.50e-2** | **2.77e-4 ± 2.46e-4** | **8.75e-3 ± 8.97e-3** | **1.12e-2 ± 1.04e-2** | **1.18e-2 ± 9.21e-3** | **2.19e-3 ± 3.69e-3** |
-| $\sqrt{t(1-t)}$ | 3.70e-2 ± 6.98e-3 | 6.25e-2 ± 1.48e-2 | 8.06e-2 ± 1.05e-2 | 9.01e-2 ± 1.02e-2 | 3.36e-3 ± 9.56e-4 | 1.67e-2 ± 1.28e-2 | 7.90e-2 ± 1.27e-2 | 1.84e-2 ± 1.10e-2 | 2.82e-3 ± 1.96e-3 |
-| const $g{=}1$ | 9.53e-1 ± 2.22e-1 | 5.35e-2 ± 3.05e-2 | 8.53e-2 ± 3.08e-2 | 1.11e-1 ± 1.61e-2 | 5.80e-3 ± 3.63e-3 | 7.52e-2 ± 3.46e-2 | 4.17e-2 ± 3.61e-2 | 1.67e-2 ± 2.07e-2 | 3.24e-2 ± 2.58e-2 |
-| $\sqrt{t}$ | 7.56e-1 ± 1.74e-1 | 4.83e-2 ± 2.76e-2 | 7.90e-2 ± 2.80e-2 | 9.80e-2 ± 1.61e-2 | 5.24e-3 ± 3.15e-3 | 6.97e-2 ± 3.54e-2 | 3.00e-2 ± 3.14e-2 | 1.24e-2 ± 1.44e-2 | 4.17e-2 ± 2.45e-2 |
-| ODE $g{=}0$ | — | 3.21e-1 ± 3.31e-2 | 1.81e-1 ± 1.07e-2 | 2.03e-1 ± 1.11e-2 | 1.45e-2 ± 1.80e-3 | 1.43e-2 ± 1.13e-2 | 1.96e-1 ± 1.27e-2 | 1.52e-2 ± 1.01e-2 | 8.92e-2 ± 8.31e-3 |
+| Föllmer $\sqrt{1-t^2}$ | **3.27e-2 ± 6.19e-3** | **1.10e-2 ± 1.70e-3** | 2.55e-2 ± 1.23e-2 | 4.01e-2 ± 1.71e-2 | 4.25e-4 ± 3.10e-4 | 1.36e-2 ± 1.34e-2 | 1.60e-2 ± 1.23e-2 | 1.84e-2 ± 9.69e-3 | 5.57e-3 ± 3.92e-3 |
+| baseline $1-t$ | 4.42e+0 ± 9.43e-1 | 1.19e-2 ± 1.69e-3 | **1.96e-2 ± 8.68e-3** | **3.06e-2 ± 1.50e-2** | **3.21e-4 ± 2.19e-4** | **8.75e-3 ± 8.97e-3** | **1.12e-2 ± 1.04e-2** | **1.18e-2 ± 9.21e-3** | **2.19e-3 ± 3.69e-3** |
+| $\sqrt{t(1-t)}$ | 3.70e-2 ± 6.98e-3 | 6.25e-2 ± 1.48e-2 | 8.06e-2 ± 1.05e-2 | 9.01e-2 ± 1.02e-2 | 3.00e-3 ± 7.79e-4 | 1.67e-2 ± 1.28e-2 | 7.90e-2 ± 1.27e-2 | 1.84e-2 ± 1.10e-2 | 2.82e-3 ± 1.96e-3 |
+| const $g{=}1$ | 9.53e-1 ± 2.22e-1 | 5.35e-2 ± 3.05e-2 | 8.53e-2 ± 3.08e-2 | 1.11e-1 ± 1.61e-2 | 4.51e-3 ± 2.88e-3 | 7.52e-2 ± 3.46e-2 | 4.17e-2 ± 3.61e-2 | 1.67e-2 ± 2.07e-2 | 3.24e-2 ± 2.58e-2 |
+| $\sqrt{t}$ | 7.56e-1 ± 1.74e-1 | 4.83e-2 ± 2.76e-2 | 7.90e-2 ± 2.80e-2 | 9.80e-2 ± 1.61e-2 | 3.85e-3 ± 2.38e-3 | 6.97e-2 ± 3.54e-2 | 3.00e-2 ± 3.14e-2 | 1.24e-2 ± 1.44e-2 | 4.17e-2 ± 2.45e-2 |
+| ODE $g{=}0$ | — | 3.21e-1 ± 3.31e-2 | 1.81e-1 ± 1.07e-2 | 2.03e-1 ± 1.11e-2 | 1.25e-2 ± 1.58e-3 | 1.43e-2 ± 1.13e-2 | 1.96e-1 ± 1.27e-2 | 1.52e-2 ± 1.01e-2 | 8.92e-2 ± 8.31e-3 |
 
 #### Target C — OU forecasting (marginalised over $Y_s$)
 
 | schedule | path KL | marg KL | $W_1$ | $W_2$ | MMD$^2$ | $\|\Delta\mu\|$ | $\|\Delta\sigma\|$ | $\|\Delta\text{skew}\|$ | $\|\Delta\text{kurt}\|$ |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| Föllmer $\sqrt{1-t^2}$ | **1.52e-2 ± 4.66e-3** | **6.03e-4 ± 2.37e-4** | **1.05e-2 ± 2.83e-3** | **1.34e-2 ± 4.08e-3** | **0.0** | 9.45e-3 ± 3.27e-3 | **6.89e-3 ± 5.07e-3** | **1.50e-2 ± 1.25e-2** | **1.19e-2 ± 5.55e-3** |
-| baseline $1-t$ | 1.56e+0 ± 7.57e-1 | 8.16e-4 ± 2.86e-4 | 1.08e-2 ± 4.49e-3 | 1.51e-2 ± 4.40e-3 | **0.0** | 9.29e-3 ± 4.74e-3 | 8.20e-3 ± 4.87e-3 | 3.65e-2 ± 1.69e-2 | 1.82e-2 ± 1.02e-2 |
-| $\sqrt{t(1-t)}$ | 1.90e-2 ± 5.74e-3 | 4.86e-2 ± 6.99e-3 | 1.06e-1 ± 8.45e-3 | 1.32e-1 ± 1.07e-2 | 3.05e-3 ± 4.98e-4 | 9.00e-3 ± 5.37e-3 | 1.32e-1 ± 1.07e-2 | 2.75e-2 ± 1.07e-2 | 3.16e-2 ± 1.21e-2 |
-| const $g{=}1$ | 4.47e-1 ± 2.16e-1 | 8.95e-3 ± 5.63e-3 | 6.16e-2 ± 2.90e-2 | 6.88e-2 ± 2.92e-2 | 1.23e-3 ± 9.02e-4 | 6.04e-2 ± 2.95e-2 | 2.27e-2 ± 1.78e-2 | 7.28e-2 ± 3.74e-2 | 1.49e-1 ± 3.27e-2 |
-| $\sqrt{t}$ | 5.11e-1 ± 1.98e-1 | 1.19e-2 ± 5.73e-3 | 6.92e-2 ± 2.24e-2 | 7.70e-2 ± 2.23e-2 | 2.28e-3 ± 1.09e-3 | 5.79e-2 ± 2.99e-2 | 3.44e-2 ± 2.92e-2 | 6.73e-2 ± 2.52e-2 | 2.08e-1 ± 2.76e-2 |
-| ODE $g{=}0$ | — | 2.22e-1 ± 1.57e-2 | 2.44e-1 ± 9.08e-3 | 3.06e-1 ± 1.18e-2 | 1.60e-2 ± 9.63e-4 | **8.42e-3 ± 9.63e-3** | 3.06e-1 ± 1.17e-2 | 2.57e-2 ± 1.73e-2 | 3.73e-2 ± 2.23e-2 |
-
-(MMD$^2$ = 0.0 for Föllmer/baseline on OU indicates the unbiased estimator
-gives a value below floating-point precision at the chosen bandwidths —
-the two sample distributions are statistically indistinguishable.)
+| Föllmer $\sqrt{1-t^2}$ | **1.52e-2 ± 4.66e-3** | **6.03e-4 ± 2.37e-4** | **1.05e-2 ± 2.83e-3** | **1.34e-2 ± 4.08e-3** | 6.80e-5 ± 3.51e-5 | 9.45e-3 ± 3.27e-3 | **6.89e-3 ± 5.07e-3** | **1.50e-2 ± 1.25e-2** | **1.19e-2 ± 5.55e-3** |
+| baseline $1-t$ | 1.56e+0 ± 7.57e-1 | 8.16e-4 ± 2.86e-4 | 1.08e-2 ± 4.49e-3 | 1.51e-2 ± 4.40e-3 | **6.73e-5 ± 6.19e-5** | 9.29e-3 ± 4.74e-3 | 8.20e-3 ± 4.87e-3 | 3.65e-2 ± 1.69e-2 | 1.82e-2 ± 1.02e-2 |
+| $\sqrt{t(1-t)}$ | 1.90e-2 ± 5.74e-3 | 4.86e-2 ± 6.99e-3 | 1.06e-1 ± 8.45e-3 | 1.32e-1 ± 1.07e-2 | 5.00e-3 ± 7.76e-4 | 9.00e-3 ± 5.37e-3 | 1.32e-1 ± 1.07e-2 | 2.75e-2 ± 1.07e-2 | 3.16e-2 ± 1.21e-2 |
+| const $g{=}1$ | 4.47e-1 ± 2.16e-1 | 8.95e-3 ± 5.63e-3 | 6.16e-2 ± 2.90e-2 | 6.88e-2 ± 2.92e-2 | 2.13e-3 ± 1.45e-3 | 6.04e-2 ± 2.95e-2 | 2.27e-2 ± 1.78e-2 | 7.28e-2 ± 3.74e-2 | 1.49e-1 ± 3.27e-2 |
+| $\sqrt{t}$ | 5.11e-1 ± 1.98e-1 | 1.19e-2 ± 5.73e-3 | 6.92e-2 ± 2.24e-2 | 7.70e-2 ± 2.23e-2 | 3.69e-3 ± 1.69e-3 | 5.79e-2 ± 2.99e-2 | 3.44e-2 ± 2.92e-2 | 6.73e-2 ± 2.52e-2 | 2.08e-1 ± 2.76e-2 |
+| ODE $g{=}0$ | — | 2.22e-1 ± 1.57e-2 | 2.44e-1 ± 9.08e-3 | 3.06e-1 ± 1.18e-2 | 2.53e-2 ± 1.48e-3 | **8.42e-3 ± 9.63e-3** | 3.06e-1 ± 1.17e-2 | 2.57e-2 ± 1.73e-2 | 3.73e-2 ± 2.23e-2 |
 
 ### How to read the tables
 
