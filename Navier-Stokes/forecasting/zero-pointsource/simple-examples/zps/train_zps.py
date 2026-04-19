@@ -18,7 +18,7 @@ from targets_zps import make_target
 from schedules_zps import list_schedules, make_g
 from drift_compose import compose_drift
 from sampler import em_sample
-from metrics import wasserstein_1d, path_kl_girsanov
+from metrics import wasserstein_1d, sliced_wasserstein, path_kl_girsanov
 
 
 def train(args):
@@ -26,7 +26,7 @@ def train(args):
     torch.manual_seed(args.seed)
     ip = ZPSInterpolant()
     target = make_target(args.target, device=device)
-    cond_dim = 1 if target.conditional else 0
+    cond_dim = getattr(target, 'cond_dim', target.dim) if target.conditional else 0
 
     b_net = MLPNet(x_dim=target.dim, cond_dim=cond_dim, hidden=args.hidden,
                    n_layers=args.n_layers, time_embed=args.time_embed).to(device)
@@ -118,12 +118,13 @@ def _eval(b_net, ip, target, args, step, device, use_wandb=False, n_samples=None
             samples = em_sample(bg_theta, g_fn, n_samples, target.dim,
                                 n_steps=args.eval_n_em, t_min=args.t_eps,
                                 t_max=1.0 - args.t_eps, cond=(y_s,), device=device)
-            w2 = wasserstein_1d(samples, x1_s, p=2) if target.dim == 1 else float('nan')
+            ref = x1_s
         else:
             samples = em_sample(bg_theta, g_fn, n_samples, target.dim,
                                 n_steps=args.eval_n_em, t_min=args.t_eps,
                                 t_max=1.0 - args.t_eps, device=device)
-            w2 = wasserstein_1d(samples, truth, p=2) if target.dim == 1 else float('nan')
+            ref = truth
+        w2 = wasserstein_1d(samples, ref, p=2) if target.dim == 1 else sliced_wasserstein(samples, ref, n_proj=100)
         report[f'w2/{name}'] = w2
 
     print(f"  [eval step={step}]")
@@ -137,7 +138,7 @@ def _eval(b_net, ip, target, args, step, device, use_wandb=False, n_samples=None
 def get_parser():
     p = argparse.ArgumentParser()
     p.add_argument('--target', type=str, default='gaussian1d',
-                   choices=['gaussian1d', 'bimodal1d', 'ou_forecast'])
+                   choices=['gaussian1d', 'bimodal1d', 'bimodal1d_sharp', 'ou_forecast', 'gmm2d_forecast'])
     p.add_argument('--seed', type=int, default=0)
     p.add_argument('--max_steps', type=int, default=20000)
     p.add_argument('--batch_size', type=int, default=512)

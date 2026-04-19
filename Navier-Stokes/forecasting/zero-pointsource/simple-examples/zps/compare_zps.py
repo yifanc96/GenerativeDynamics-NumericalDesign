@@ -16,15 +16,15 @@ from targets_zps import make_target
 from schedules_zps import list_schedules, make_g
 from drift_compose import compose_drift
 from sampler import em_sample
-from metrics import (wasserstein_1d, mmd_rbf, moment_errors, kl_analytic_1d,
-                     path_kl_girsanov)
+from metrics import (wasserstein_1d, sliced_wasserstein, mmd_rbf, moment_errors,
+                     kl_analytic_1d, path_kl_girsanov)
 
 
 def load_checkpoint(ckpt_path, device):
     ck = torch.load(ckpt_path, map_location=device, weights_only=False)
     args = ck['args']
     target = make_target(args['target'], device=device)
-    cond_dim = 1 if target.conditional else 0
+    cond_dim = getattr(target, 'cond_dim', target.dim) if target.conditional else 0
     b_net = MLPNet(x_dim=target.dim, cond_dim=cond_dim, hidden=args['hidden'],
                    n_layers=args['n_layers'], time_embed=args['time_embed']).to(device)
     b_net.load_state_dict(ck['b_state'])
@@ -78,16 +78,15 @@ def evaluate_one(ckpt_path, args, device):
         if target.dim == 1:
             rec['w1'] = wasserstein_1d(samples, ref, p=1)
             rec['w2'] = wasserstein_1d(samples, ref, p=2)
-            rec['mmd2'] = mmd_rbf(samples, ref)
-            rec.update({f'mom_{k}': v for k, v in moment_errors(samples, ref).items()})
-            # KL via KDE vs analytic density, if available
-            if hasattr(target, 'density'):
-                rec['kl_hist'] = kl_analytic_1d(samples, target.density)
-            else:
-                rec['kl_hist'] = float('nan')
         else:
-            for k in ['w1', 'w2', 'mmd2', 'kl_hist']:
-                rec[k] = float('nan')
+            rec['w1'] = sliced_wasserstein(samples, ref, n_proj=200, p=1)
+            rec['w2'] = sliced_wasserstein(samples, ref, n_proj=200, p=2)
+        rec['mmd2'] = mmd_rbf(samples, ref)
+        rec.update({f'mom_{k}': v for k, v in moment_errors(samples, ref).items()})
+        if hasattr(target, 'density') and target.dim == 1:
+            rec['kl_hist'] = kl_analytic_1d(samples, target.density)
+        else:
+            rec['kl_hist'] = float('nan')
         out[name] = rec
     return out
 

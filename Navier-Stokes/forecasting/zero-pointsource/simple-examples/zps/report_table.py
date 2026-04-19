@@ -33,9 +33,10 @@ PRETTY_SCHED = {
     'zero':      'ODE ($g{=}0$)',
 }
 PRETTY_TARGET = {
-    'gaussian1d':  r'Target A: $\mathcal{N}(\mu,\sigma^2)$',
-    'bimodal1d':   r'Target B: bimodal GMM',
-    'ou_forecast': r'Target C: OU forecasting (marginal over $Y_s$)',
+    'gaussian1d':      r'Target A: $\mathcal{N}(\mu,\sigma^2)$',
+    'bimodal1d':       r'Target B: bimodal GMM',
+    'ou_forecast':     r'Target C: OU forecasting (marginal over $Y_s$)',
+    'gmm2d_forecast':  r'Target D: 2D GMM jump-forecast (conditional, marginalised over $x_0$)',
 }
 
 
@@ -91,7 +92,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--in_dir', type=str, default='./figs')
     p.add_argument('--targets', type=str, nargs='+',
-                   default=['gaussian1d', 'bimodal1d', 'ou_forecast'])
+                   default=['gaussian1d', 'bimodal1d', 'ou_forecast', 'gmm2d_forecast'])
     p.add_argument('--out', type=str, default='./figs/zps_table.md')
     args = p.parse_args()
     results_by_target = {}

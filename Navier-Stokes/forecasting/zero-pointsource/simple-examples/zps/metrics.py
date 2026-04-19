@@ -24,6 +24,26 @@ def wasserstein_1d(a, b, p=2):
     return (diff.pow(p).mean().pow(1.0 / p)).item()
 
 
+def sliced_wasserstein(a, b, n_proj=200, p=2, seed=0):
+    """Sliced p-Wasserstein between two same-size 2D+ empirical distributions.
+    For each of n_proj random unit directions, project both samples, compute
+    the 1D W_p, average (p-th root at the end)."""
+    assert a.shape == b.shape
+    D = a.shape[1]
+    gen = torch.Generator(device=a.device).manual_seed(seed)
+    dirs = torch.randn(n_proj, D, generator=gen, device=a.device, dtype=a.dtype)
+    dirs = dirs / dirs.norm(dim=-1, keepdim=True).clamp_min(1e-10)
+    # (n_proj, n) projections
+    pa = a @ dirs.T       # (n, n_proj)
+    pb = b @ dirs.T
+    pa_s, _ = pa.sort(dim=0)
+    pb_s, _ = pb.sort(dim=0)
+    diff = (pa_s - pb_s).abs()
+    if p == 1:
+        return diff.mean().item()
+    return (diff.pow(p).mean().pow(1.0 / p)).item()
+
+
 def mmd_rbf(a, b, bandwidths=None, max_n=5000, use_median_heuristic=True):
     """Biased (V-statistic) MMD^2 with a mixture of RBF kernels:
         MMD^2_b = (1/n^2) sum k(x_i, x_j) + (1/m^2) sum k(y_i, y_j)
@@ -37,8 +57,8 @@ def mmd_rbf(a, b, bandwidths=None, max_n=5000, use_median_heuristic=True):
     By default bandwidths are chosen by the median heuristic over the combined
     sample (robust, scale-adapting). Passing an explicit tuple overrides that.
     """
-    a = a.reshape(-1, 1)[:max_n]
-    b = b.reshape(-1, 1)[:max_n]
+    a = a.reshape(a.shape[0], -1)[:max_n]
+    b = b.reshape(b.shape[0], -1)[:max_n]
     n, m = a.shape[0], b.shape[0]
     def _pd(x, y): return (x.unsqueeze(1) - y.unsqueeze(0)).pow(2).sum(-1)
     d_aa, d_bb, d_ab = _pd(a, a), _pd(b, b), _pd(a, b)
@@ -61,22 +81,35 @@ def mmd_rbf(a, b, bandwidths=None, max_n=5000, use_median_heuristic=True):
 
 
 def moment_errors(a, b):
-    """Return dict of absolute errors in mean, std, skew, excess kurtosis (1D)."""
-    a = a.reshape(-1).double()
-    b = b.reshape(-1).double()
-    out = {}
-    out['mean'] = float(abs(a.mean() - b.mean()).item())
-    out['std'] = float(abs(a.std(unbiased=False) - b.std(unbiased=False)).item())
-    for k, name in [(3, 'skew'), (4, 'kurt')]:
-        am, bm = a.mean(), b.mean()
-        asig = a.std(unbiased=False).clamp_min(1e-8)
-        bsig = b.std(unbiased=False).clamp_min(1e-8)
-        mk_a = (((a - am) / asig) ** k).mean().item()
-        mk_b = (((b - bm) / bsig) ** k).mean().item()
-        if name == 'kurt':
-            mk_a -= 3.0; mk_b -= 3.0  # excess kurtosis
-        out[name] = float(abs(mk_a - mk_b))
-    return out
+    """Absolute differences in first four moments. Works for 1D or 2D samples.
+    For 2D, per-dimension moments are aggregated as L2-norm of the per-dim
+    difference vector (so the output is a scalar per moment, comparable across
+    1D and 2D targets). Definitions below match the README moment section.
+
+    Returns dict with keys 'mean', 'std', 'skew', 'kurt':
+      mean: | E_a[X] - E_b[X] |      (|.| is L2 norm if vector-valued)
+      std:  | std_a(X) - std_b(X) |  (per-dim std, then L2)
+      skew: | skew_a - skew_b |      (Fisher-Pearson standardized third moment)
+      kurt: | kurt_a - kurt_b |      (excess kurtosis, i.e. fourth moment - 3)
+    """
+    def _moments(x):
+        x = x.reshape(x.shape[0], -1).double()
+        mean = x.mean(dim=0)                                          # (D,)
+        std = x.std(dim=0, unbiased=False).clamp_min(1e-12)           # (D,)
+        z = (x - mean) / std                                          # standardized
+        skew = (z ** 3).mean(dim=0)                                   # per-dim
+        kurt = (z ** 4).mean(dim=0) - 3.0                             # excess
+        return mean, std, skew, kurt
+
+    ma, sa, ka, ku_a = _moments(a)
+    mb, sb, kb, ku_b = _moments(b)
+    def _l2(v): return float(v.norm().item())
+    return {
+        'mean': _l2(ma - mb),
+        'std':  _l2(sa - sb),
+        'skew': _l2(ka - kb),
+        'kurt': _l2(ku_a - ku_b),
+    }
 
 
 def kl_analytic_1d(samples, density_fn, x_lo=None, x_hi=None, n_grid=400, kde_h=None):

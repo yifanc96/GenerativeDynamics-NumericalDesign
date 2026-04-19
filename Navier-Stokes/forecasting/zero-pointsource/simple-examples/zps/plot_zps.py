@@ -15,7 +15,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--out_dir', type=str, default='./figs')
     p.add_argument('--targets', type=str, nargs='+',
-                   default=['gaussian1d', 'bimodal1d', 'ou_forecast'])
+                   default=['gaussian1d', 'bimodal1d', 'ou_forecast', 'gmm2d_forecast'])
     p.add_argument('--schedules_order', type=str, nargs='+',
                    default=['follmer', 'baseline', 'triangle', 'const', 'sqrt_t', 'zero'])
     args = p.parse_args()
@@ -26,9 +26,10 @@ def main():
             data[t] = json.load(f)['agg']
 
     pretty_target = {
-        'gaussian1d':  r'Target A: $\mathcal{N}(\mu, \sigma^2)$',
-        'bimodal1d':   r'Target B: bimodal GMM',
-        'ou_forecast': r'Target C: OU forecasting',
+        'gaussian1d':      r'Target A: $\mathcal{N}(\mu, \sigma^2)$',
+        'bimodal1d':       r'Target B: bimodal GMM',
+        'ou_forecast':     r'Target C: OU forecasting',
+        'gmm2d_forecast':  r'Target D: 2D GMM jump-forecast',
     }
     pretty_sched = {
         'follmer':   r'Föllmer $\sqrt{1-t^2}$',
