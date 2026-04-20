@@ -79,21 +79,21 @@ Ensemble sizes at evaluation: 20 members × 60 test inputs × 50 EM steps per sa
 
 The original table above uses the default sampler `t_eps = 1e-3` and `n_em = 50`. The eq. (3.9) coefficient $\alpha(t) = (g_t^2 - \sigma_t^2)/(2 t \sigma_t (\dot\beta\sigma - \beta\dot\sigma))$ **diverges at $t=0$ and $t=1$** for any non-Föllmer schedule, so stepping too close to the boundary amplifies the drift artificially. Re-running with `t_eps_override = 0.01` (i.e. integrate on $[0.01, 0.99]$) and `n_em = 100` — identical network, identical test set — produces JSONs in `figs/safer/`:
 
-CRPS (lower = better):
+CRPS (lower = better, mean ± seed-std over seeds {0, 1}):
 
 | lag | Föllmer | baseline | triangle | const | sqrt_t | ODE |
 |---|---|---|---|---|---|---|
-| 1  | **0.232** | 0.237 | 0.250 | 0.545 | 0.534 | 0.306 |
-| 10 | **0.584** | 0.587 | 0.649 | 0.751 | 0.782 | 0.707 |
-| 40 | **2.488** | 2.488 | 2.581 | 2.515 | 2.591 | 2.603 |
+| 1  | **0.232 ± 0.007** | 0.237 ± 0.007 | 0.250 ± 0.009 | 0.545 ± 0.063 | 0.534 ± 0.061 | 0.306 ± 0.016 |
+| 10 | **0.584 ± 0.017** | 0.587 ± 0.017 | 0.649 ± 0.015 | 0.751 ± 0.011 | 0.782 ± 0.008 | 0.707 ± 0.018 |
+| 40 | **2.488 ± 0.038** | 2.488 ± 0.034 | 2.581 ± 0.033 | 2.515 ± 0.031 | 2.591 ± 0.035 | 2.603 ± 0.032 |
 
-Enstrophy $W_2$:
+Enstrophy $W_2$ (mean ± seed-std):
 
 | lag | Föllmer | baseline | triangle | const | sqrt_t | ODE |
 |---|---|---|---|---|---|---|
-| 1  | **0.190** | 0.218 | 0.351 | 0.198 | 0.212 | 0.552 |
-| 10 | 0.385 | 0.481 | 1.113 | **0.261** | 0.753 | 1.388 |
-| 40 | 2.433 | 2.560 | 3.301 | **2.053** | 3.015 | 3.257 |
+| 1  | **0.190 ± 0.033** | 0.218 ± 0.041 | 0.351 ± 0.028 | 0.198 ± 0.005 | 0.212 ± 0.003 | 0.552 ± 0.010 |
+| 10 | 0.385 ± 0.002 | 0.481 ± 0.007 | 1.113 ± 0.030 | **0.261 ± 0.165** | 0.753 ± 0.163 | 1.388 ± 0.041 |
+| 40 | 2.433 ± 0.288 | 2.560 ± 0.227 | 3.301 ± 0.154 | **2.053 ± 0.361** | 3.015 ± 0.201 | 3.257 ± 0.105 |
 
 Observations:
 - **ODE CRPS drops by ∼7× at lag=1** (2.24 → 0.306) and ∼3.5× at lag=10 (2.51 → 0.707). The catastrophic-ODE narrative in the top table was driven almost entirely by the $\alpha$-boundary amplification, not by the $g=0$ pathology itself. With $t_\max = 0.99$ the ODE is only mildly worse than Föllmer on CRPS.
