@@ -1,0 +1,558 @@
+\documentclass[11pt]{amsart}
+\usepackage{graphicx}
+\usepackage{amsmath,amsfonts,amsthm,amssymb,amscd}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{upgreek}
+\usepackage{enumerate}
+\usepackage{enumitem}
+\usepackage{bm}
+\usepackage[foot]{amsaddr}
+\usepackage[hidelinks]{hyperref}
+\hypersetup{colorlinks=true, linkcolor=black, citecolor=blue, urlcolor=black}
+\usepackage[letterpaper,top=3.5cm,bottom=3.5cm,left=3.5cm,right=3.5cm]{geometry}
+
+\newcommand{\cP}{\mathcal{P}} \newcommand{\cN}{\mathcal{N}}
+\newcommand{\cL}{\mathcal{L}} \newcommand{\cF}{\mathcal{F}}
+\newcommand{\cG}{\mathcal{G}} \newcommand{\cH}{\mathcal{H}}
+\newcommand{\cI}{\mathcal{I}} \newcommand{\cM}{\mathcal{M}}
+\newcommand{\cT}{\mathcal{T}} \newcommand{\cS}{\mathcal{S}}
+\newcommand{\bE}{\mathbb{E}} \newcommand{\bP}{\mathbb{P}}
+\newcommand{\bR}{\mathbb{R}} \newcommand{\bN}{\mathbb{N}}
+\newcommand{\bZ}{\mathbb{Z}} \newcommand{\bT}{\mathbb{T}}
+\newcommand{\vx}{\mathbf{x}} \newcommand{\vy}{\mathbf{y}}
+\newcommand{\vz}{\mathbf{z}} \newcommand{\vm}{\mathbf{m}}
+\newcommand{\rd}{\mathrm{d}}
+\DeclareMathOperator*{\argmin}{arg\,min}
+\DeclareMathOperator{\cond}{cond}
+\DeclareMathOperator{\tr}{tr}
+
+\newtheorem{theorem}{Theorem}[section]
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{assumption}[theorem]{Assumption}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+\numberwithin{equation}{section}
+
+\title[Multiscale stochastic interpolants]{Multiscale stochastic interpolants for generative modeling of multiscale fields}
+\author{}
+\date{}
+
+\begin{document}
+\begin{abstract}
+Generative models for scientific fields, such as Gaussian random fields and invariant measures of stochastic Navier--Stokes, must reproduce structure over many orders of magnitude of scales. Standard flow matching from isotropic noise to such targets yields a probability flow ODE whose drift has a Lipschitz constant that grows polynomially with the grid resolution, so the number of integration steps required to resolve the fine scales scales polynomially with the resolution. A companion work \cite{chen2025scale} showed that, for a single scalar schedule, an \emph{optimal} choice obtained by minimising a Lipschitz energy reduces this dependence from polynomial to logarithmic.
+
+In this note we develop a complementary, spatial multiscale construction. We decompose the target field into nested resolution bands, define a \emph{scale-modulated} stochastic interpolant that transports one band at a time, and train an independent velocity field per band coarse-to-fine. Each sub-problem is a flow matching problem whose target is a conditional distribution of one band given all coarser bands. The central theoretical principle is the \emph{well-conditionedness of the next-scale band conditioned on the coarser scales}: in the Gaussian setting this is a statement about the spectrum of the hierarchical Schur complement, and we show it is bounded by a constant depending only on the refinement factor, not on the global resolution. The related (and stronger) \emph{screening effect} -- exponential decay of the off-diagonals of the conditional covariance -- is not what gives the scale-uniform conditioning, but plays a different role: it implies the per-band drift is nearly local, so a simple parameterisation (small-receptive-field, shallow U-Nets) is expressive enough to represent it, and fitting such a network is well matched to the inductive bias of the problem. We give a clean numerical recipe: data-adapted noise with variance equal to the conditional variance, a $1/\sigma^2$-reweighted loss, and scale-appropriate U-Nets per band. Experiments on $64\times 64$ Mat\'ern fields, $128\times 128$ and $256\times 256$ stochastic Navier--Stokes invariant measures, and $32\!\to\!128$ Kolmogorov super-resolution forecasting show that a few RK4 steps per band suffice to match or beat a standard single-schedule flow using $4\times$ to $10\times$ more function evaluations.
+\end{abstract}
+
+\maketitle
+\tableofcontents
+
+\section{Introduction}
+\subsection{Motivation and relation to prior work}
+Flow matching and stochastic interpolants \cite{lipman2022flow,liu2022flow,albergo2023building,albergo2023stochastic} learn a generative ODE
+\begin{equation}
+\label{eq:generative-ODE}
+ \rd X_t = b_t(X_t)\,\rd t,\qquad X_0\sim\rho_0,\qquad X_1\sim\rho^*,
+\end{equation}
+by regressing the drift $b_t$ on the time derivative of a linear interpolant $I_t=\alpha_t x_0+\beta_t x_1$ between a noise sample $x_0\sim\rho_0$ and a data sample $x_1\sim\rho^*$. For target distributions $\rho^*$ that represent scientific fields with multiscale Fourier spectra, a fundamental numerical difficulty arises: the linearised drift of \eqref{eq:generative-ODE} has a condition number and a Lipschitz constant that grow polynomially with the spatial resolution $N$ when a fixed-variance isotropic Gaussian noise is used \cite{chen2025scale}. The consequence is that many function evaluations (RK4 steps) are required to accurately resolve the fine scales.
+
+The companion paper \cite{chen2025scale} studied this problem from the perspective of a single \emph{scalar} schedule $(\alpha_t,\beta_t)$ and a Gaussian noise $x_0\sim\cN(0,C_0)$ with a covariance $C_0$ that must be no smoother than the data, establishing well-posedness through Cameron--Martin space theory, and deriving the optimal Lipschitz-energy schedule that yields a drift whose Lipschitz constant grows only logarithmically in $N$. That analysis is scalar in time: a single $\alpha_t,\beta_t$ is used for every spatial scale.
+
+This note takes a complementary, spatial approach. We replace the scalar schedule by a \emph{matrix} (more precisely, diagonal in a multiscale basis) schedule, in which different spatial frequencies are transported on disjoint sub-intervals of the generative time axis. The resulting generative ODE factors into a sequence of well-conditioned sub-problems, each of which can be trained independently with its own neural network. Theoretically, the construction rests on the well-conditionedness of the hierarchical Schur complement for Gaussian conditioning, which controls the Lipschitz constant of the per-band drift; a complementary and stronger property, the screening effect for Laplace-power covariances \cite{chen2021consistency,owhadi2019operator,stein2002screening}, implies additionally that the conditional covariance is nearly diagonal and local, so that the per-band drift admits an efficient \emph{parameterisation} by simple, small-receptive-field networks. Numerically the construction realises the classical multigrid / wavelet intuition for ill-conditioned problems, within the modern flow matching framework. In order to avoid overlap with \cite{chen2025scale}, we do not revisit the scalar-schedule analysis here; we do reuse the same motivating ill-conditioned targets and the same flow matching framework.
+
+The style of our analysis is influenced by the gamblet / operator-adapted wavelet program \cite{chen2021consistency,owhadi2019operator}, and by the wavelet score-based diffusion model of Guth--Coste--De~Bortoli--Mallat \cite{guth2022wavelet}. The novelty with respect to these works is that we integrate the two-layered theoretical picture -- well-conditioned hierarchical Schur complement for numerical-integration efficiency, plus screening for parameterisation efficiency (i.e., expressivity within simple, local network classes) -- into the flow matching training and sampling pipelines, and demonstrate its practical impact on challenging scientific datasets.
+
+\subsection{Contributions}
+\begin{enumerate}
+\item A \emph{scale-modulated stochastic interpolant} that transports one spatial band at a time and factors the generative ODE into per-band sub-problems \S\ref{sec:interpolant}.
+\item An analysis of per-band conditioning based on the hierarchical Schur complement \S\ref{sec:theory}. For Gaussian data $\sim\cN(0,(-\Delta+\tau^2)^{-s})$ or Mat\'ern covariances, the condition number of the $m$-th band, conditioned on all coarser bands, is bounded by a constant depending only on the refinement ratio and $s$ -- independent of the total number of levels. More generally, the key principle is that the next-scale band conditioned on the coarser bands is a well-conditioned distribution; the screening effect is a stronger, auxiliary property of the Laplace-power case that gives a sparse / local conditional covariance and makes the per-band drift efficiently representable by small, local networks.
+\item A simple, robust numerical recipe \S\ref{sec:numerics}: data-adapted noise with variance equal to the \emph{conditional variance} of the band (estimated by ridge regression), $1/\sigma^2$-reweighted loss, scale-appropriate U-Nets, and a coarse-to-fine sampler.
+\item Experiments \S\ref{sec:experiments} on Mat\'ern Gaussian fields ($64\times 64$), stochastic Navier--Stokes invariant measures ($128\times 128$ and $256\times 256$), probabilistic forecasting of Kolmogorov flow, and $32\!\to\!128$ super-resolution forecasting, showing a $4\times$ to $10\times$ reduction in function evaluations at matched quality.
+\end{enumerate}
+
+\section{Preliminaries}
+\label{sec:preliminaries}
+We briefly recall the standard flow matching setup to fix notation.
+
+\subsection{Stochastic interpolants}
+Let $\rho^*$ be a target distribution on $\bR^d$ with $\bE_{\rho^*}\|x\|^2<\infty$ and let $\rho_0$ be a noise distribution. Let $\alpha_t,\beta_t\in C^1([0,1])$ with $\alpha_0=\beta_1=1$, $\alpha_1=\beta_0=0$. The \emph{linear stochastic interpolant} is
+\begin{equation}
+ I_t = \alpha_t x_0+\beta_t x_1,\qquad x_0\sim\rho_0,\quad x_1\sim\rho^*,\quad x_0\perp x_1.
+\end{equation}
+The drift $b_t(x)=\bE[\dot I_t\mid I_t=x]$ solves the regression problem $b_t=\argmin_{\hat b}\int_0^1\bE\|\hat b_t(I_t)-\dot I_t\|^2\,\rd t$, and the ODE \eqref{eq:generative-ODE} with $X_0\sim\rho_0$ satisfies $\mathrm{Law}(X_t)=\mathrm{Law}(I_t)$, so $X_1\sim\rho^*$.
+
+\subsection{Gaussian case and the role of $C_0$}
+When both marginals are Gaussian, $x_0\sim\cN(0,C_0),\ x_1\sim\cN(0,C_1)$, the drift is linear $b_t(x)=B(t)x$ with
+\begin{equation}
+\label{eq:B-linear}
+ B(t) = (\dot\alpha_t\alpha_t C_0+\dot\beta_t\beta_t C_1)(\alpha_t^2 C_0+\beta_t^2 C_1)^{-1}.
+\end{equation}
+As shown in \cite{chen2025scale}, for Laplace-power covariances
+$C_0=\sigma_0^2(-\Delta+\tau_0^2)^{-s_0}$, $C_1=\sigma_1^2(-\Delta+\tau_1^2)^{-s_1}$ with $s_0\le s_1$ (i.e. rougher noise) and scalar linear schedule $\alpha_t=1-t,\beta_t=t$, the operator $B(t)$ is bounded near $t=0$ but diverges like $1/(1-t)$ on high Fourier modes as $t\to1$ unless $s_0=s_1$. Consequently the number of RK4 steps needed to integrate \eqref{eq:generative-ODE} to relative accuracy $\varepsilon$ in the $m$-th Fourier mode grows polynomially in $|m|$. It is this terminal-time stiffness that a spatial multiscale schedule removes.
+
+\subsection{The multiscale spectral intuition}
+Still in the Gaussian setting, a frequency-dependent schedule $(\alpha_t(m),\beta_t(m))$ yields the Fourier-diagonal drift
+\begin{equation}
+ \tilde b_t(m) = \tfrac{1}{2}\tfrac{\rd}{\rd t}\log(\alpha_t(m)^2 c_0(m)+\beta_t(m)^2 c_1(m)),
+\end{equation}
+and the particular choice
+\begin{equation}
+ \log(\alpha_t(m)^2 c_0(m)+\beta_t(m)^2 c_1(m)) = (1-t)\log c_0(m) + t\log c_1(m)
+\end{equation}
+gives $\tilde b_t(m)=\tfrac12\log(c_1(m)/c_0(m))$, which grows only logarithmically with $|m|$. This is the spectral version of the multiscale principle; below we develop a \emph{spatial} version that does not require the two covariances to be diagonalisable in a common basis and applies to non-Gaussian targets.
+
+\section{Scale-modulated stochastic interpolants}
+\label{sec:interpolant}
+\subsection{Multiresolution decomposition}
+Let the data live on a square grid of size $2^L\times 2^L$, $x_1\in\bR^{2^L\times 2^L}$. Fix a coarsest level $M\le L$ and consider a nested sequence of grids
+\begin{equation}
+ \Omega^{(M)}\subset\Omega^{(M+1)}\subset\cdots\subset\Omega^{(L)},
+\end{equation}
+with $|\Omega^{(N)}|=2^N\times 2^N$ and $\Omega^{(N)}\setminus\Omega^{(N-1)}$ a set of \emph{new} pixels added at level $N$. For a vector $x\in\bR^{\Omega^{(L)}}$ we write $x^{(N)}\in\bR^{\Omega^{(N)}\setminus\Omega^{(N-1)}}$ (with the convention $\Omega^{(M-1)}=\emptyset$), and $x^{\le N}=(x^{(M)},\ldots,x^{(N)})\in\bR^{\Omega^{(N)}}$.
+
+Two concrete decompositions are used in this paper. We call them by the names used in the code.
+\begin{enumerate}
+\item \textbf{Mask (hierarchical subsampling in pixel space).} $\Omega^{(N)}$ is the sublattice of every $2^{L-N}$-th pixel in both directions; $x^{(N)}$ is the set of pixels lying on $\Omega^{(N)}$ but not on the coarser $\Omega^{(N-1)}$. Coarse bands are literally coarse subgrids of the original field.
+\item \textbf{Haar wavelet.} $x^{(M)}$ is the $LL$ coefficient at scale $2^M$ and $x^{(N)}$ for $N>M$ is the triple of detail bands $(LH,HL,HH)$ at scale $2^N$. Reconstruction is the standard inverse Haar transform.
+\end{enumerate}
+Both decompositions satisfy the following property, which is all we need below.
+\begin{assumption}[Multiscale decomposition]
+\label{ass:decomp}
+There is a linear bijection $W:\bR^{\Omega^{(L)}}\to\bigoplus_{N=M}^L\bR^{\Omega^{(N)}\setminus\Omega^{(N-1)}}$ sending $x\mapsto(x^{(M)},\ldots,x^{(L)})$. Both $W$ and $W^{-1}$ can be applied in $O(N^2)$ operations at resolution $2^N\times 2^N$.
+\end{assumption}
+
+\subsection{Scale-modulated interpolant}
+Let $T=L-M+1$ and partition $[0,T]$ into the unit intervals
+$J_N=[N-M,\ N-M+1)$ for $N=M,M+1,\ldots,L$ (with the right endpoint included at $N=L$). Let $x_1\sim\rho^*$ and let $x_0=(x_0^{(M)},\ldots,x_0^{(L)})$ be noise sampled per band, where $x_0^{(N)}$ is a Gaussian vector whose covariance we specify in \S\ref{sec:numerics}. The \emph{scale-modulated interpolant} is
+\begin{equation}
+\label{eq:scale-interpolant}
+ I_t^{(N)} = \begin{cases}
+ (N-M+1-t)\,x_0^{(N)} + (t-N+M)\,x_1^{(N)}, & t\in J_N,\\
+ x_0^{(N)}, & t<N-M,\\
+ x_1^{(N)}, & t\ge N-M+1.
+\end{cases}
+\end{equation}
+On the interval $J_N$, only the $N$-th band moves: the coarser bands have already been transported to their data values, and the finer bands are still frozen at their noise values. Combining \eqref{eq:scale-interpolant} across bands gives an interpolant $I_t$ for the full signal.
+
+\subsection{Per-band flow matching and factorised generative ODE}
+The next lemma is the key observation that motivates the whole construction.
+\begin{lemma}[Per-band conditional target]
+\label{lem:cond-target}
+Assume $x_0^{(N)}$ are independent across $N$ and independent of $x_1$. Consider the ODE \eqref{eq:generative-ODE} driven by the drift $b_t(x)=\bE[\dot I_t\mid I_t=x]$ of the interpolant \eqref{eq:scale-interpolant}. Then $b_t$ is block-diagonal across bands: on $t\in J_N$, $b_t$ acts non-trivially only on the $N$-th band, and
+\begin{equation}
+\label{eq:band-drift}
+ b_t^{(N)}(x) = \bE\big[x_1^{(N)}-x_0^{(N)}\ \big|\ I_t^{(N)}=x^{(N)},\ x_1^{\le N-1}=x^{\le N-1}\big].
+\end{equation}
+Consequently, integrating \eqref{eq:generative-ODE} over $J_N$ transports $x_0^{(N)}\to $ a sample from the conditional distribution of $x_1^{(N)}$ given $x_1^{\le N-1}$.
+\end{lemma}
+\begin{proof}[Sketch]
+On $t\in J_N$, $I_t^{(K)}$ is deterministic for $K\ne N$: it equals $x_0^{(K)}$ for $K>N$ and $x_1^{(K)}$ for $K<N$. Thus the only active band in $\dot I_t$ is the $N$-th one, and \eqref{eq:band-drift} follows from the tower property of conditional expectation. The push-forward statement is the usual property of stochastic interpolants applied to each band's sub-interval.
+\end{proof}
+The practical consequence is that the generative ODE factors into $L-M+1$ independent per-band problems:
+\begin{enumerate}
+\item Train an independent network $\hat b^{(N)}$ on the regression problem defined by \eqref{eq:band-drift} (see Algorithm~\ref{alg:training}).
+\item At sampling time, integrate coarse-to-fine: start with $x_0^{(M)}$ and transport it to $x_1^{(M)}$ over $J_M$; feed this as conditioning to $\hat b^{(M+1)}$ and transport $x_0^{(M+1)}\to x_1^{(M+1)}$ over $J_{M+1}$; etc.
+\end{enumerate}
+Each sub-problem is a \emph{conditional} flow matching problem whose target is the distribution of one band given all coarser bands. The next section shows that this target is well conditioned.
+
+\begin{remark}[Matrix schedule interpretation]
+The interpolant \eqref{eq:scale-interpolant} can be written as $I_t = A_t x_0 + B_t x_1$ with matrix coefficients $A_t,B_t$ that are diagonal in the multiscale basis of Assumption~\ref{ass:decomp}. This is the spatial analogue of the frequency-dependent schedule discussed at the end of \S\ref{sec:preliminaries}.
+\end{remark}
+
+\section{Theory: well-conditionedness of hierarchical conditioning}
+\label{sec:theory}
+We analyse the per-band sub-problem of Lemma~\ref{lem:cond-target}. Two distinct properties of the conditional distribution are relevant, and they play different roles:
+\begin{itemize}
+\item[(W)] \textbf{Well-conditionedness:} the condition number of the conditional covariance $\Sigma_{F\mid C}$ is bounded, uniformly in the scale index. This bound controls the Lipschitz constant of the per-band drift and therefore the \emph{numerical integration cost}.
+\item[(S)] \textbf{Screening / sparsity:} the off-diagonal entries of $\Sigma_{F\mid C}$ decay exponentially with graph distance, so the conditional field is nearly spatially decoupled given the coarse scales. This is a \emph{parameterisation} property: it implies the per-band drift has a local, almost patch-wise structure, and so can be represented accurately by a network with small receptive field and shallow depth. Equivalently, if one restricts to such simple networks, screening is what makes their expressive power sufficient.
+\end{itemize}
+(W) is the load-bearing property for the numerical claims of this paper; (S) is a bonus, available in the Laplace-power setting and in the more general coercive-elliptic setting of \cite{owhadi2019operator}, that makes the per-band problem learnable with a simple, local parameterisation. We emphasise that without a constraint on the network class, a screening-type property does not by itself reduce sample complexity; rather, it explains why a natural inductive bias -- local, translation-equivariant, shallow networks -- is well matched to the per-band problem, and hence why the method works with moderate training budgets. For non-Gaussian fields the same two-layer conceptual split applies: one asks whether the conditional distribution of one band given all coarser bands is well conditioned (a statement about its covariance or log-Sobolev constant), and whether it is additionally nearly decoupled into local patches. The central object for both is the conditional covariance of a Gaussian, which is given by the \emph{Schur complement}.
+
+\subsection{Schur complement and Gaussian conditioning}
+Let $X\sim\cN(0,\Sigma)$ with $\Sigma\in\bR^{d\times d}$ partitioned into two index sets $F$ (``fine'') and $C$ (``coarse''):
+\begin{equation}
+ \Sigma = \begin{pmatrix} \Sigma_{FF} & \Sigma_{FC}\\ \Sigma_{CF} & \Sigma_{CC}\end{pmatrix}.
+\end{equation}
+Then $X_F\mid X_C=y$ is Gaussian with mean $\Sigma_{FC}\Sigma_{CC}^{-1}y$ and covariance the \emph{Schur complement}
+\begin{equation}
+\label{eq:schur}
+ \Sigma_{F\mid C} \;=\; \Sigma_{FF} - \Sigma_{FC}\Sigma_{CC}^{-1}\Sigma_{CF}.
+\end{equation}
+In our multiscale setup, for each level $N$, $F$ is the set of new pixels at level $N$ (for mask) or the set of detail coefficients at scale $N$ (for Haar), and $C$ is the set of all coarser-level coefficients. The conditional covariance $\Sigma_{F\mid C}$ governs both the width of the noise $x_0^{(N)}$ we should use and the condition number of the per-band flow matching problem.
+
+The following identity is useful for computation and is the basis of the implementation:
+\begin{equation}
+\label{eq:schur-block-inverse}
+ \big(\Sigma^{-1}\big)_{FF} \;=\; \Sigma_{F\mid C}^{-1},
+\end{equation}
+i.e., the $F$-block of the \emph{precision} matrix of $X$ equals the inverse of the conditional covariance on $F$ given $C$. In particular, the conditional covariance is large where the precision matrix is small.
+
+\subsection{Well-conditionedness of the hierarchical Schur complement}
+We now state the property (W). We recall the Laplace-power Mat\'ern family on $D\subset\bR^d$:
+\begin{equation}
+\label{eq:matern}
+ \cL = (-\Delta+\tau^2)^{s},\qquad C = \sigma^2\cL^{-1},\qquad s>d/2,
+\end{equation}
+with homogeneous Dirichlet boundary conditions for concreteness. The operator $\cL$ is coercive on $H_0^s(D)$, and $C=\sigma^2\cL^{-1}$ is its Green's operator.
+
+\begin{theorem}[Scale-uniform conditioning of hierarchical Schur complement]
+\label{thm:cond}
+Let $X\sim\cN(0,C)$ with $C=\sigma^2\cL^{-1}$ as in \eqref{eq:matern} with $s>d/2$. Discretise on a quasi-uniform hierarchy of grids with spacing $h_N=h_0 2^{-N}$, $N=M,\ldots,L$, and let $F_N$ be the new nodes at level $N$ and $C_N=\bigcup_{N'<N}F_{N'}$. Then there exist constants $C_{\mathrm{lo}},C_{\mathrm{hi}}>0$ depending only on $s$, $d$, $\tau$ and the shape-regularity of the hierarchy such that, uniformly in $M\le N\le L$,
+\begin{equation}
+\label{eq:cond-bound}
+ C_{\mathrm{lo}}\, h_N^{2s}\, I \;\preceq\; \Sigma_{F_N\mid C_N} \;\preceq\; C_{\mathrm{hi}}\, h_N^{2s}\, I,
+\end{equation}
+so $\cond(\Sigma_{F_N\mid C_N})\le C_{\mathrm{hi}}/C_{\mathrm{lo}}$ uniformly in $N$.
+\end{theorem}
+Proof sketch. The precision operator $\cL=\sigma^{-2}C^{-1}$ is local and coercive on $H_0^s$. Using \eqref{eq:schur-block-inverse}, the conditional precision matrix is the $F_N$-block of this coercive operator restricted to the fine nodes. Polynomial-approximation theory on shape-regular meshes (Poincar\'e--Friedrichs inequalities at scale $h_N$) then gives two-sided bounds on the eigenvalues of this block scaling like $h_N^{-2s}$; inverting yields \eqref{eq:cond-bound}. This argument is standard for coercive elliptic operators and is explained, for the Laplace-power case, in the appendix of \cite{chen2021consistency}; a significantly more general result is \cite[Theorem 13.10]{owhadi2019operator} which applies to any coercive divergence-form elliptic operator with bounded (possibly rough) coefficients and yields the same scale-uniform bound on the hierarchical Schur complement.
+
+Theorem~\ref{thm:cond} is exactly the property (W). It is a statement about the \emph{spectrum} of the conditional covariance; it does not (yet) say anything about sparsity or off-diagonal structure.
+
+\subsection{Screening effect: sparsity of the conditional covariance}
+A strictly stronger result holds in the Laplace-power setting: the \emph{entries} of $\Sigma_{F_N\mid C_N}$ decay exponentially with graph distance. This is the screening effect in spatial statistics \cite{stein2002screening}; in the operator-adapted wavelet language \cite{owhadi2019operator} it is the exponential localisation of the gamblets associated with $\cL$.
+
+\begin{theorem}[Screening for Laplace-power covariances]
+\label{thm:screening}
+Under the assumptions of Theorem~\ref{thm:cond}, there exist constants $K>0$, $\gamma>0$, depending only on $s,d,\tau$ and the shape-regularity of the hierarchy, such that
+\begin{equation}
+ \big|[\Sigma_{F_N\mid C_N}]_{ij}\big| \;\le\; K\, h_N^{2s}\, \exp(-\gamma\, d_N(i,j)),
+\end{equation}
+uniformly in $N$, where $d_N(i,j)$ is the graph distance between nodes $i,j\in F_N$ in units of $h_N$.
+\end{theorem}
+Thus the conditional field is \emph{nearly decoupled} given the coarse scales; the correlation length collapses to $O(1)$ grid spacings at level $N$. The consequence for the generative model is two-fold:
+\begin{enumerate}
+\item The per-band drift $b^{(N)}(x)$ has a local dependence on $x$: the output at pixel $i$ depends effectively only on inputs in an $O(1)$-radius neighbourhood. This justifies the use of compact U-Nets with small receptive field and modest depth for each band, i.e. the per-band drift is efficiently \emph{parameterisable} by simple networks.
+\item The conditional distribution factorises approximately as a product over nearly-decoupled patches, which suggests that massively parallel, patch-wise training and sampling are possible in principle. We do not exploit this in the current implementation, but note it as an opportunity.
+\end{enumerate}
+Property (S) is thus a \emph{parameterisation-efficiency} statement: when the hypothesis class is restricted to local networks, (S) ensures this class still contains the true drift. It is complementary to the numerical-integration statement of Theorem~\ref{thm:cond}. Neither implies the other in general: one can construct covariances with bounded condition number but no off-diagonal decay (e.g., a small, dense bias), or with rapid decay but ill-conditioned spectrum (e.g., a nearly-rank-deficient local operator).
+
+\begin{remark}[Haar decomposition and Nyquist]
+For the Haar decomposition, the $F$-set is the detail band at scale $2^N$ rather than the new pixels. Both (W) and (S) continue to hold because the Haar detail bands form a Riesz basis of $L^2$ with exponentially decaying dual. A notable practical consequence is that the Haar decomposition handles the Nyquist frequency correctly: the finest mask band has only pixel-level resolution and captures only half the Nyquist energy, whereas the finest Haar detail band has full Nyquist-resolved content. This shows up in our Mat\'ern oracle experiments: the oracle mask sampler has a $\sim\!2\times$ excess-energy peak at $k=N/2$ that disappears with the Haar decomposition (cf. \S\ref{sec:experiments}).
+\end{remark}
+
+\subsection{Consequence for per-band flow matching}
+Apply Lemma~\ref{lem:cond-target} together with the well-conditionedness statement of Theorem~\ref{thm:cond}. The per-band target distribution $x_1^{(N)}\mid x_1^{\le N-1}$ is Gaussian with covariance $\Sigma_{F_N\mid C_N}$ satisfying \eqref{eq:cond-bound}. Choose the noise for the $N$-th band to be
+\begin{equation}
+\label{eq:noise-choice}
+ x_0^{(N)}\sim\cN(0,\sigma_N^2 I),\qquad \sigma_N^2 := \tr(\Sigma_{F_N\mid C_N})/|F_N|,
+\end{equation}
+i.e. an isotropic Gaussian with the correct per-band variance. Then for the linear schedule on $J_N$,
+\begin{equation}
+ \operatorname{Cov}(I_t^{(N)}\mid x_1^{\le N-1}) \;=\; (N-M+1-t)^2 \sigma_N^2 I + (t-N+M)^2 \Sigma_{F_N\mid C_N},
+\end{equation}
+and the per-band linear drift has the form \eqref{eq:B-linear} with $C_0=\sigma_N^2 I$, $C_1=\Sigma_{F_N\mid C_N}$. By \eqref{eq:cond-bound} the two covariances are spectrally equivalent,
+\begin{equation}
+ (C_{\mathrm{lo}}/\bar C_N)\,I \preceq C_1 C_0^{-1} \preceq (C_{\mathrm{hi}}/\bar C_N)\, I,
+\end{equation}
+where $\bar C_N\in[C_{\mathrm{lo}},C_{\mathrm{hi}}]$ is the mean eigenvalue; the ratio is $O(1)$ uniformly in $N$. Combining with the scalar drift formula for equal-covariance Gaussians,
+\begin{equation}
+\label{eq:scale-free-lip}
+ \|b_t^{(N)}\|_{\mathrm{Lip}} \le \kappa_*, \qquad t\in J_N,
+\end{equation}
+with $\kappa_*$ independent of $N$, $L$, and the resolution. This is the key result: each per-band sub-problem is uniformly well-conditioned, and a fixed number of RK4 steps per band suffices to reach a target accuracy, for every level. In contrast, the single-schedule drift has a Lipschitz constant that grows polynomially in the global resolution $N$.
+
+\begin{corollary}[Scale-free cost at fixed accuracy, Gaussian case]
+\label{cor:cost}
+Let the data be as in Theorem~\ref{thm:cond} and let the noise be as in \eqref{eq:noise-choice}. There is a constant $R$ depending only on $s$, $d$, $\tau$ and the target accuracy $\varepsilon$, but not on $L$ or the global resolution $N=2^L$, such that $R$ RK4 steps per band suffice to generate a sample whose per-band relative error in $L^2$ is below $\varepsilon$. The total cost is $O(R\cdot L)\approx O(R\log N)$.
+\end{corollary}
+
+\begin{remark}[Beyond Laplace powers]
+The bound \eqref{eq:scale-free-lip} relies only on the well-conditionedness statement (W). The more general estimate \cite[Theorem 13.10]{owhadi2019operator} shows that (W) is valid for any coercive divergence-form elliptic precision operator with bounded (possibly rough, even non-smooth) coefficients. Thus the same conclusion holds for Mat\'ern-like fields with heterogeneous coefficients, and more generally for any Gaussian field whose precision operator is a coercive elliptic operator. For non-Gaussian data, the relevant generalisation of (W) is that the conditional distribution of each band given all coarser bands is well-conditioned -- e.g., satisfies a log-Sobolev or Poincar\'e inequality with constant uniform in the scale -- and the corresponding generalisation of (S) is that this conditional distribution is nearly a product over local patches. The empirical results of \S\ref{sec:experiments} indicate that both properties hold, at least approximately, for invariant measures of stochastically forced Navier--Stokes.
+\end{remark}
+
+\section{Numerical implementation}
+\label{sec:numerics}
+This section gives the precise algorithms used in the code. The goal is to make the implementation reproducible and the design choices explicit.
+
+\subsection{Estimation of per-band conditional variance}
+For each level $N$, we draw a large empirical sample $\{x_1^{(i)}\}_{i=1}^K$ from the data and compute the multiscale decomposition to obtain $\{(x_1^{(N),i},x_1^{\le N-1,i})\}_{i=1}^K$. We fit, by ridge regression with ridge parameter $\rho=10^{-6}$,
+\begin{equation}
+ x_1^{(N)} \approx M_N\, x_1^{\le N-1} + c_N,
+\end{equation}
+and estimate $\sigma_N^2$ as the per-coordinate empirical variance of the residual averaged over pixels. This is the plug-in estimator of the Schur complement's trace normalisation \eqref{eq:noise-choice}. Using ridge $\rho=10^{-6}$ rather than the default $10^{-4}$ was important in our experiments: a ridge of $10^{-4}$ inflates the estimated $\sigma_N^2$ by orders of magnitude for the finer detail bands and destroys the per-band conditioning; the effect is documented in the Gaussian-fields diagnostic scripts.
+
+\subsection{Per-band training}
+\begin{algorithm}[t]
+\caption{Per-band flow matching training (coarse-to-fine)}
+\label{alg:training}
+\begin{algorithmic}[1]
+\REQUIRE Data samples $\{x_1^{(i)}\}$; multiscale transform $W$; hierarchy levels $M,\ldots,L$.
+\FOR{$N=M,M+1,\ldots,L$}
+  \STATE Compute $\{x_1^{(N),i},x_1^{\le N-1,i}\}_i=W(x_1^{(i)})$.
+  \STATE Estimate $\sigma_N^2$ via ridge regression.
+  \STATE Build a scale-appropriate U-Net $\hat b^{(N)}_\theta$ at resolution $2^N\times 2^N$.
+  \WHILE{not converged}
+    \STATE Sample a batch $(x_1^{(N)},x_1^{\le N-1})$, $t\sim\mathrm{Uniform}(0,1)$, $z_0\sim\cN(0,\sigma_N^2 I)$.
+    \STATE $z_t\leftarrow (1-t)z_0 + t\,x_1^{(N)}$.\hfill\COMMENT{per-band interpolant on $J_N$ rescaled to $[0,1]$}
+    \STATE $\hat v\leftarrow \hat b^{(N)}_\theta(z_t, x_1^{\le N-1}, t)$.
+    \STATE $\cL\leftarrow \frac{1}{\sigma_N^2}\|\hat v-(x_1^{(N)}-z_0)\|^2$.\hfill\COMMENT{$1/\sigma^2$ loss reweighting}
+    \STATE Gradient step on $\theta$.
+  \ENDWHILE
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+A few design choices deserve comment; they correspond to the "raw" variant in the code and were selected empirically across all four variants tested (\texttt{raw}, \texttt{rescale}, \texttt{center}, \texttt{center\_rescale}).
+
+\paragraph{$1/\sigma^2$ loss reweighting.} The per-band residual has variance $\sigma_N^2$, which varies by orders of magnitude across bands. Dividing the MSE by $\sigma_N^2$ makes the per-band loss $O(1)$ and avoids the optimiser being dominated by the largest-variance band. No explicit rescaling of the inputs or outputs is necessary; in particular we keep the interpolant in the \emph{raw} data scale, which empirically outperformed the EDM-style preconditioning \cite{karras2022elucidating} on our Navier--Stokes problems.
+
+\paragraph{1-channel vs 2-channel conditioning.} For the mask decomposition, the simplest implementation takes the image at resolution $2^N\times 2^N$ obtained by overwriting the new pixels with $z_t$ and leaving the coarse pixels at their data values; this is a \emph{1-channel} input that encodes both the state and the conditioning in the same tensor. An earlier 2-channel version (interpolant on $F$ pixels, context on $C$ pixels) gave essentially identical accuracy and was discarded.
+
+\paragraph{No $t$-dependent preconditioning.} The variance-preserving preconditioning of \cite{karras2022elucidating} was tried but provided no benefit on Navier--Stokes; the simpler formulation above is sufficient.
+
+\paragraph{Scale-appropriate U-Nets.} For each level $N$ we use a U-Net whose depth and channel dimensions scale with $2^N$. Concretely we use $\mathrm{dim\_mults}=(1,2)$ for $R\le 8$, $(1,2,2)$ for $R\le 32$, and $(1,2,2,2)$ for finer grids; base channel dimension $\mathrm{dim}\in\{32,64\}$ depending on dataset. This is important: using a single network for all bands defeats the per-band factorisation and makes training of the coarsest bands needlessly expensive. The screening property (S) of Theorem~\ref{thm:screening} provides theoretical support for this choice: since the per-band drift is approximately local, a small-receptive-field network with modest depth is expressive enough to capture it. The practical reduction in training cost comes from this matching of the inductive bias to the problem, rather than from a classical sample-complexity gain. Memory budget is the main reason the finest mask band at $256\times 256$ is problematic; the finest Haar detail band, whose resolution is $128\times 128$, fits comfortably.
+
+\subsection{Sampling}
+At inference, we integrate the factorised generative ODE band-by-band. For each band $N=M,\ldots,L$, we run RK4 with $K_N$ steps on the interval $t\in[0,1]$ using the learned $\hat b^{(N)}$, starting from $z_0\sim\cN(0,\sigma_N^2 I)$ and conditioned on the already generated $x_1^{\le N-1}$. The total number of function evaluations (NFE) is $4\sum_{N=M}^L K_N$ (RK4 has four evaluations per step). In the experiments below we take $K_N\equiv K$ independent of $N$, consistent with Corollary~\ref{cor:cost}.
+
+\subsection{Extensions: mean flow and conditional forecasting}
+\paragraph{Mean flow / flow map.}
+Replace the instantaneous drift $b_t$ by the \emph{flow map} $\Phi_{s\to t}(x)=$ position at time $t$ of the generative ODE initialised at $x$ at time $s$, and regress directly on pairs $(s,t,x)$; this is the mean flow / consistency-model formulation. The per-band factorisation of Lemma~\ref{lem:cond-target} commutes with this substitution: the flow map restricted to $t,s\in J_N$ only moves the $N$-th band. The same per-band screening argument (Theorem~\ref{thm:screening}) bounds the Lipschitz constant of the per-band flow map by a scale-free constant, which in turn controls the variance of the flow-map regression. Empirically this yields a further reduction in sampling NFE at the cost of slightly heavier training.
+
+\paragraph{Conditional forecasting.}
+For probabilistic forecasting, we generate $x_1:=\omega_{t+\tau}$ conditioned on an observed $\omega_t$. Two conditioning strategies were tested:
+\begin{enumerate}
+\item \textbf{Innovation-in-residual.} Predict $r = x_1 - x_{1,\mathrm{lo}}$ where $x_{1,\mathrm{lo}}$ is a linear forecast of $\omega_{t+\tau}$ from $\omega_t$ (e.g., a coarse solver step). The per-band pipeline is trained on the innovation $r$ with the condition appended as an extra channel.
+\item \textbf{Direct conditioning.} Concatenate $\omega_t$ (suitably subsampled to the current band's resolution) as an additional input channel.
+\end{enumerate}
+The first approach is preferable when a coarse predictor $x_{1,\mathrm{lo}}$ is available, because the innovation has smaller energy and narrower statistics. The second approach is used for the super-resolution problem of \S\ref{sec:experiments} where the low-resolution state itself is the condition.
+
+\paragraph{Super-resolution forecasting.}
+When the conditioning field is given at a coarser resolution $2^{M'}\times 2^{M'}$ with $M'\ge M$, we choose the coarsest level of the decomposition to match: $M:=M'$. The coarsest band's network then sees the conditioning field directly, at its native resolution, and the finer bands see it subsampled to their own resolution. Empirically choosing $M=M'$ (rather than going coarser) is important: if $M<M'$, the coarsest band cannot exploit the conditioning at full resolution and accuracy degrades.
+
+\section{Experiments}
+\label{sec:experiments}
+We report experiments on three problems of increasing difficulty. All networks are standard U-Nets, all integrators are RK4, and all reported errors are relative spectral errors computed on held-out samples: for each Fourier wavenumber $k$ we compute $|E_{\mathrm{gen}}(k)-E_{\mathrm{true}}(k)|/E_{\mathrm{true}}(k)$, and summarise by the mean and maximum over the first 30 (resp.\ 60) wavenumber bins.
+
+\subsection{Mat\'ern Gaussian random fields (G=64, $s=3$)}
+The data is a $64\times 64$ discretisation of a Mat\'ern field $\cN(0,(-\Delta+\tau^2)^{-s})$ with $\tau=1$, $s=3$. We use $L=6$, $M=3$, i.e. four levels at resolutions $8,16,32,64$. Each band is trained with $K=4$ RK4 steps per band (total NFE $=4\times 4\times 4=64$). A standard single-schedule flow matching baseline is trained at the same total NFE.
+
+\begin{center}
+\begin{tabular}{lcc}
+\hline
+Method & mean rel error on first 30 bins & max rel error on first 30 bins\\
+\hline
+Oracle (analytic Gaussian drift, mask) & 0.028 & 0.13\\
+Oracle (analytic, Haar) & 0.038 & 0.41\\
+Multiscale mask (trained) & 0.21 & 0.69\\
+Multiscale Haar (trained) & 0.30 & 0.83\\
+\hline
+\end{tabular}
+\end{center}
+All trained networks keep every one of the first 30 bins below relative error 1, which none of the single-schedule baselines at matched NFE achieve. The mask-oracle retains a $2\times$ peak at the Nyquist wavenumber (inherent to the pixel-space decomposition); the Haar oracle resolves the Nyquist correctly, at the cost of slightly worse condition numbers in the detail bands ($\sim\!64$--$150$ vs $\sim\!360$ for mask). The measured condition numbers match the bound of Theorem~\ref{thm:screening} up to the ridge-regularisation slack.
+
+\subsection{Stochastic Navier--Stokes invariant measure ($128\times 128$)}
+The data are vorticity snapshots from the invariant measure of the stochastically forced 2D Navier--Stokes equation on the torus; we use 100{,}000 independent snapshots pooled from five trajectory files. For a fair comparison, we fix the \emph{total} number of RK4 steps between the multiscale (K=3, four bands) and the single-schedule baseline, so that both use the same NFE budget.
+\begin{center}
+\begin{tabular}{ccccc}
+\hline
+Total RK4 & NFE & Multiscale (mask, $K=3$) & Single-schedule baseline \\
+\hline
+ 4 &  16 & 0.21 & 0.29\\
+ 8 &  32 & \textbf{0.09} & 0.14\\
+16 &  64 & \textbf{0.06} & 0.21\\
+32 & 128 & \textbf{0.09} & 0.19\\
+\hline
+\end{tabular}
+\end{center}
+(Numbers are the mean relative error on the first 60 Fourier bins.) The multiscale method wins at every NFE budget; at $\mathrm{NFE}=64$ it is $4\times$ more accurate than the baseline, and at the smallest budget $\mathrm{NFE}=16$ still $1.4\times$ more accurate.
+
+\subsection{Conditional forecasting on Navier--Stokes ($128\times 128$, lag $\tau=2$)}
+We predict $\omega_{t+2}$ from $\omega_t$ using the innovation formulation: the network sees $x_{\mathrm{lo}}=\omega_t$ as an additional channel and predicts the innovation $r=\omega_{t+2}-\omega_t$.
+\begin{center}
+\begin{tabular}{ccccc}
+\hline
+Total RK4 & NFE & Multiscale (K=3) & Single-schedule\\
+\hline
+ 4  &  16  & \textbf{0.23} & 0.92\\
+ 8  &  32  & \textbf{0.22} & 0.23\\
+16  &  64  & 0.21           & \textbf{0.10}\\
+32  & 128  & 0.21           & \textbf{0.08}\\
+\hline
+\end{tabular}
+\end{center}
+The multiscale approach dominates at low NFE (a $4\times$ gain at NFE $=16$), but plateaus at $\approx 0.21$. A diagnosis: in the current implementation the coarse bands subsample the conditioning $x_{\mathrm{lo}}$ to their own resolution, discarding fine-scale information from the condition. An architecture that preserves full-resolution conditioning at every band (e.g., a shared encoder or cross-attention from $x_{\mathrm{lo}}$) should remove the plateau; we leave this to future work.
+
+\subsection{Super-resolution forecasting on Kolmogorov flow ($32\!\to\!128$)}
+The conditioning is $\omega_t$ at resolution $32\times 32$ and the target is $\omega_{t+\tau}$ at resolution $128\times 128$, so we choose $M=5$, $L=7$ (three bands at resolutions $32,64,128$). This matches the lowest-resolution band to the native resolution of the condition. At $K=2$ RK4 steps per band (total NFE $=24$), the multiscale model achieves mean relative error $0.19$ on the first 60 bins, with $58/60$ bins below relative error $1$. A single-schedule baseline at NFE $=16$ achieves $0.52$ with only $55/60$ bins below $1$. The multiscale generator is also stable under $5$-step autoregressive rollout.
+
+\section{Discussion}
+\subsection{Relation to scalar-schedule optimisation}
+The spatial multiscale factorisation described here is complementary to the scalar-schedule optimisation of \cite{chen2025scale}. Both approaches address the same fundamental obstacle -- the growing Lipschitz constant of the drift when a fixed-variance noise is used for a multiscale target -- but they do so along orthogonal axes. The scalar optimal schedule acts globally on time; the multiscale factorisation acts locally in space. They can be combined in principle: each per-band sub-problem is itself a flow matching problem and may be trained with its own optimal scalar schedule. We expect this combination to deliver a small additional improvement on top of the results reported here, though we have not pursued it.
+
+\subsection{Connection to renormalisation group flows}
+\label{sec:rg}
+The scale-modulated interpolant \eqref{eq:scale-interpolant} is in the same family as the interpolants induced by continuum renormalisation group (RG) flows. Writing the latter in the stochastic-interpolant language makes the relationship transparent: continuum RG flows produce interpolants of the form
+\begin{equation}
+\label{eq:rg-interpolant}
+ I_t \;=\; (\mathrm{I}-C^{-1}C_t)\,\varphi_0 \;+\; \sqrt{C_t - C_t C^{-1}C_t}\,z,
+\end{equation}
+for a monotone family $\{C_t\}$ of covariance operators with $C_0=0$ and $C_\infty=C$, where $\varphi_0$ is a sample from the target measure $\mu=\cN(0,C)\cdot e^{-V}/Z$ and $z$ is a white noise; see Appendix~\ref{app:rg} for the derivations and the three canonical choices (Carosso, Wegner--Morris, Polchinski) \cite{cotler2023renormalization,cotler2023renormalizing,bauerschmidt2023stochastic}. Any such choice produces a frequency-dependent schedule: different Fourier/spatial modes interpolate at different rates. Our construction is the discrete, piecewise-constant limit of this picture: instead of the smooth frequency-dependent $C_t$, we release one scale band at a time, which (a) makes the per-band sub-problem a finite-dimensional flow matching problem with a clean Schur-complement structure, and (b) permits independent networks per band, better matched to the differing local statistics of coarse and fine bands. Conversely, any smooth choice of $C_t$ with $[C_t,C]=0$ recovers a frequency-dependent scalar schedule in a common eigenbasis of $(C_t,C)$, of the kind discussed in \S\ref{sec:preliminaries}. A practical advantage of the discrete scheme is that it does not require $(C_t,C)$ to be simultaneously diagonalisable, since the scale decomposition is specified at the level of the signal rather than through operators acting on a Gaussian reference.
+
+\subsection{Open directions}
+Several directions remain open: (i) a theoretical treatment of the non-Gaussian case, replacing the Schur complement identity by a suitable conditional log-Sobolev or functional inequality; (ii) full-resolution conditioning architectures for the forecasting setting, to remove the plateau observed in \S\ref{sec:experiments}; (iii) memory-efficient training of the finest mask band at $256\times 256$ (gradient checkpointing or a Haar-style decomposition for fine bands); (iv) extension to non-square or non-uniform grids, using unstructured operator-adapted wavelets \cite{owhadi2019operator}; (v) concretely borrowing from the Polchinski/Bauerschmidt \cite{bauerschmidt2023stochastic} choices of $\dot C_t$ to design smooth, non-disjoint schedules that still respect the per-band well-conditionedness of Theorem~\ref{thm:cond}.
+
+\section*{Code and data}
+The code accompanying this paper is organised in two folders:
+\begin{itemize}
+\item \texttt{Gaussian-fields/}: \texttt{train\_multiscale\_perband.py} is the main training and evaluation script for Mat\'ern fields; \texttt{test\_conditioning\_diagnosis.py}, \texttt{test\_oracle\_exact.py}, and \texttt{test\_screening.py} reproduce the theoretical diagnostics.
+\item \texttt{Navier-Stokes/}: \texttt{train\_ns\_multiscale\_v2.py} is the recommended unconditional trainer; \texttt{train\_ns\_forecasting\_multiscale.py} is the conditional forecasting trainer; \texttt{train\_kolmogorov\_multiscale.py} is the $32\!\to\!128$ super-resolution forecasting trainer.
+\end{itemize}
+All experiments are on the branch \texttt{data-dep-noise-and-multiscale}.
+
+\appendix
+\section{Renormalisation group flows as stochastic interpolants}
+\label{app:rg}
+This appendix records the translation between renormalisation group (RG) flows in the Wilson/Polchinski tradition and the stochastic interpolant framework. Throughout $\varphi$ denotes a random field on $\bR^d$, $\mu$ a target measure, $W_t$ spatiotemporal white noise, and we use physics sign conventions.
+
+\subsection{Carosso scheme}
+The Carosso flow is the over-damped Langevin SDE
+\begin{equation}
+ \rd\varphi_t = \Delta\varphi_t\,\rd t + \rd W_t,\qquad \varphi_0\sim\mu,
+\end{equation}
+which dampens high frequencies faster than low frequencies and converges in law to $\nu(\rd\varphi)\propto\exp(\int -|\nabla\varphi|^2)\cD\varphi$. The corresponding (reversed-time) stochastic interpolant is
+\begin{equation}
+ I_t = e^{t\Delta}\varphi_0 + \sqrt{\mathrm{I}-e^{2t\Delta}}\,z,
+\end{equation}
+with $z\sim\nu$. The coefficient $e^{t\Delta}$ is diagonal in Fourier and scale-dependent: it acts slower on low modes than on high modes, realising a continuous multiscale schedule.
+
+\subsection{Wegner--Morris schemes}
+The Wegner--Morris family is parameterised by an \emph{ERG kernel} $\dot C_t\succeq 0$ and a seed action $S_t$:
+\begin{equation}
+ \rd\varphi_t = -\dot C_t\frac{\delta S_t}{\delta\varphi}\Big|_{\varphi=\varphi_t}\rd t + \sqrt{\dot C_t}\,\rd W_t,
+\end{equation}
+which reduces to the Carosso scheme for $\dot C_t=\mathrm{I}$ and $S_t=\int\tfrac12|\nabla\varphi|^2$.
+
+\subsection{Polchinski scheme}
+Fix $K_t$ non-increasing in $t$ with $K_0=1$. In momentum space take
+\begin{equation}
+ S_t(\varphi) = \tfrac12\int\tfrac{1}{K_t(|p|)}\varphi(p)(|p|^2+m^2)\varphi(-p)\,\rd p,\qquad (\dot C_t\varphi)(p) = -\tfrac{1}{|p|^2+m^2}\partial_t K_t(|p|)\varphi(p).
+\end{equation}
+The Polchinski SDE is
+\begin{equation}
+ \rd\varphi_t(p) = \partial_t\log K_t(|p|)\,\varphi_t(p)\,\rd t + \sqrt{-\tfrac{1}{|p|^2+m^2}\partial_t K_t(|p|)}\,\rd W_t(p),
+\end{equation}
+with stochastic interpolant
+\begin{equation}
+ I_t(p) = K_t(|p|)\varphi_0(p) + \sqrt{(K_t(|p|)-K_t(|p|)^2)\tfrac{1}{|p|^2+m^2}}\,z(p).
+\end{equation}
+If we start from the free theory ($\lambda=0$) the law of $\varphi_t$ is exactly $\exp(-S_t(\varphi))$ at every $t$; hence the Polchinski SDE is a time-reversed free diffusion, which links it to the F\"ollmer process.
+
+\subsection{Bauerschmidt's pathwise formulation}
+Following \cite{bauerschmidt2023stochastic}, write the target as
+$\mu(\rd\varphi)=\nu(\rd\varphi)\exp(-V(\varphi))/Z$ with $\nu=\cN(0,C)$, and decompose $C=\int_0^\infty\dot C_u\rd u$ with $C_0=0$ and $C_\infty=C$. The renormalised potential is
+\begin{equation}
+ V_t(\varphi) = -\log\bE_{\xi\sim\cN(0,C_t)}[e^{-V(\varphi+\xi)}].
+\end{equation}
+The pathwise Polchinski flow
+\begin{equation}
+\label{eq:pathwise-polchinski}
+ \varphi_t = -\int_t^\infty\dot C_u\nabla V_u(\varphi_u)\rd u + \int_t^\infty\sqrt{\dot C_u}\rd W_u
+\end{equation}
+satisfies $\varphi_0\sim\mu$; the time reversal of \eqref{eq:pathwise-polchinski} is the F\"ollmer process. The implied interpolant is exactly \eqref{eq:rg-interpolant}:
+\begin{equation}
+ I_t = (\mathrm{I}-C^{-1}C_t)\varphi_0 + \sqrt{C_t - C_t C^{-1}C_t}\,z,\qquad \varphi_0\sim\mu,\ z\sim\cN(0,\mathrm{I}).
+\end{equation}
+Two natural choices of $\dot C_t$ discussed in \cite{bauerschmidt2023stochastic}:
+\begin{itemize}
+\item $\dot C_t = e^{-tA}$ with $A=C^{-1}$: then $C_t=A^{-1}(\mathrm{I}-e^{-tA})$ and $I_t = e^{-tA}\varphi_0 + \sqrt{A^{-1}(\mathrm{I}-e^{-tA})e^{-tA}}\,z$.
+\item $\dot C_t = (tA+\mathrm{I})^{-2}$: then $C_t = A^{-1}(\mathrm{I}-(tA+\mathrm{I})^{-1})$ and $I_t = (tA+\mathrm{I})^{-1}\varphi_0 + \sqrt{A^{-1}(\mathrm{I}-(tA+\mathrm{I})^{-1})(tA+\mathrm{I})^{-1}}\,z$.
+\end{itemize}
+In each case the coefficients of the interpolant are non-trivial operator-valued functions of $A=C^{-1}$, i.e. scale-dependent: different eigenmodes of $A$ interpolate at different rates.
+
+\subsection{Where our construction sits}
+Our scale-modulated interpolant \eqref{eq:scale-interpolant} is a discrete analogue: it partitions $[0,T]$ into unit intervals and transports exactly one \emph{spatial} band on each. This can be obtained as a limiting case of a Wegner--Morris-type flow in which $\dot C_t$ is chosen to be the projector onto the $N$-th band on the interval $t\in J_N$ and zero elsewhere. Unlike the smooth choices above, the discrete version does not require a common eigenbasis for $C$ and the RG kernel; the decomposition is specified directly on the signal, via the mask or Haar transform of Assumption~\ref{ass:decomp}.
+
+\bibliographystyle{plain}
+\begin{thebibliography}{99}
+
+\bibitem{albergo2023building}
+M.~S. Albergo and E.~Vanden-Eijnden.
+\newblock Building normalizing flows with stochastic interpolants.
+\newblock In {\em ICLR}, 2023.
+
+\bibitem{albergo2023stochastic}
+M.~S. Albergo, N.~M. Boffi, and E.~Vanden-Eijnden.
+\newblock Stochastic interpolants: A unifying framework for flows and
+  diffusions.
+\newblock {\em arXiv:2303.08797}, 2023.
+
+\bibitem{chen2024probabilistic}
+Y.~Chen, M.~S. Albergo, N.~M. Boffi, and E.~Vanden-Eijnden.
+\newblock Probabilistic forecasting with stochastic interpolants and
+  F{\"o}llmer processes.
+\newblock {\em ICML}, 2024.
+
+\bibitem{chen2025scale}
+Y.~Chen, E.~Vanden-Eijnden, and J.~Xu.
+\newblock Scale-aware stochastic interpolants and optimal Lipschitz schedules
+  for generative modelling of numerically ill-conditioned distributions.
+\newblock {\em arXiv:2509.02971}, 2025.
+
+\bibitem{guth2022wavelet}
+F.~Guth, S.~Coste, V.~De~Bortoli, and S.~Mallat.
+\newblock Wavelet score-based generative modeling.
+\newblock {\em NeurIPS}, 2022.
+
+\bibitem{karras2022elucidating}
+T.~Karras, M.~Aittala, T.~Aila, and S.~Laine.
+\newblock Elucidating the design space of diffusion-based generative models.
+\newblock {\em NeurIPS}, 2022.
+
+\bibitem{lipman2022flow}
+Y.~Lipman, R.~T.~Q. Chen, H.~Ben-Hamu, M.~Nickel, and M.~Le.
+\newblock Flow matching for generative modeling.
+\newblock {\em ICLR}, 2023.
+
+\bibitem{liu2022flow}
+X.~Liu, C.~Gong, and Q.~Liu.
+\newblock Flow straight and fast: Learning to generate and transfer data with
+  rectified flow.
+\newblock {\em ICLR}, 2023.
+
+\bibitem{owhadi2019operator}
+H.~Owhadi and C.~Scovel.
+\newblock {\em Operator-Adapted Wavelets, Fast Solvers, and Numerical
+  Homogenization: from a Game Theoretic Approach to Numerical Approximation and
+  Algorithm Design}.
+\newblock Cambridge University Press, 2019.
+
+\bibitem{chen2021consistency}
+Y.~Chen, H.~Owhadi, and A.~Stuart.
+\newblock Consistency of empirical {B}ayes and kernel flow for hierarchical
+  parameter estimation.
+\newblock {\em Mathematics of Computation}, 90(332):2527--2578, 2021.
+
+\bibitem{stein2002screening}
+M.~L. Stein.
+\newblock The screening effect in kriging.
+\newblock {\em The Annals of Statistics}, 30(1):298--323, 2002.
+
+\bibitem{marchand2022wavelet}
+T.~Marchand, M.~Ozawa, G.~Biroli, and S.~Mallat.
+\newblock Wavelet conditional renormalization group.
+\newblock {\em arXiv:2207.04941}, 2022.
+
+\bibitem{bauerschmidt2023stochastic}
+R.~Bauerschmidt, T.~Bodineau, and B.~Dagallier.
+\newblock Stochastic dynamics and the {P}olchinski equation: an introduction.
+\newblock {\em arXiv:2307.07619}, 2023.
+
+\bibitem{cotler2023renormalization}
+J.~Cotler and S.~Rezchikov.
+\newblock Renormalization group flow as optimal transport.
+\newblock {\em Physical Review D}, 108(2):025003, 2023.
+
+\bibitem{cotler2023renormalizing}
+J.~Cotler and S.~Rezchikov.
+\newblock Renormalizing diffusion models.
+\newblock {\em arXiv:2308.12355}, 2023.
+
+\end{thebibliography}
+
+\end{document}
