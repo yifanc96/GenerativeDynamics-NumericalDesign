@@ -247,8 +247,7 @@ Method & Train steps & NFE=4 & NFE=8 & NFE=16 & NFE=32 & NFE=64 & NFE=128 \\
 \midrule
 \multicolumn{8}{c}{\textit{Single-scale (1-mask)}} \\
 \midrule
-Single-scale FM, standard~\cite{chen2024probabilistic} & 50k & --- & --- & $0.263\pm 0.006$ & $0.115\pm 0.010$ & $0.112\pm 0.014$ & $0.113\pm 0.015$ \\
-Single-scale FM, gauss & 50k & --- & --- & $0.275\pm 0.005$ & $0.124\pm 0.008$ & $0.120\pm 0.012$ & $0.120\pm 0.013$ \\
+Single-scale FM (1-mask, gauss base)$^{\dagger}$ & 50k & --- & --- & $0.263\pm 0.006$ & $0.115\pm 0.010$ & $0.112\pm 0.014$ & $0.113\pm 0.015$ \\
 Single-scale meanflow, gauss & 200k & \TBD & \TBD & \TBD & \TBD & \TBD & --- \\
 \midrule
 \multicolumn{8}{c}{\textit{Multiscale, mask K=3}} \\
@@ -259,6 +258,8 @@ Multiscale shortcut (perband) & 250k & $\mathbf{0.167\pm 0.004}$ & $\mathbf{0.14
 \bottomrule
 \end{tabular}
 \end{table}
+
+\noindent$^{\dagger}$\emph{We have two independent single-scale FM checkpoints (\texttt{ns\_gauss\_base/}, from \texttt{train\_ns\_gauss\_base.py}; \texttt{ns\_standard\_1mask\_G128/}, from \texttt{train\_ns\_standard.py}). Both are vanilla 1-mask FM with $z_0\sim\cN(0,I)$ and the same UNet architecture (ch=32, dim\_mults=(1,2,2,2)); the standard-1mask version reaches slightly lower numbers (e.g.\ 0.112 vs 0.120 at NFE=64), and we report it as the representative single-scale FM baseline. The two checkpoints differ only by training run / random seed.}
 
 \paragraph{Finer-grid investigation of multiscale-FM NFE=32 anomaly.}
 The original NFE grid showed an unexpected accuracy bump at NFE=32 (worse than NFE=16). A finer NFE grid clarifies the cause:
