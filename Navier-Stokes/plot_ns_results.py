@@ -23,20 +23,24 @@ kvals = d['kvals']
 n_k = len(spec_truth)
 
 NAMES = {
-    'mfm': 'Multiscale FM (v1, 150k)',
-    'mmf': 'Multiscale meanflow (250k)',
-    'msc': 'Multiscale shortcut (250k)',
+    'mfm':       'Multiscale FM (v1, 150k)',
+    'mmf':       'Multiscale meanflow (250k)',
+    'msc':       'Multiscale shortcut (250k)',
+    'sfm_gauss': 'Single-scale FM, gauss (50k)',
+    'sfm_std':   'Single-scale FM standard (50k)',
 }
 COLORS = {
-    'mfm': 'tab:blue',
-    'mmf': 'tab:green',
-    'msc': 'tab:purple',
+    'mfm':       'tab:blue',
+    'mmf':       'tab:green',
+    'msc':       'tab:purple',
+    'sfm_gauss': 'tab:orange',
+    'sfm_std':   'tab:red',
 }
 
 # ============== Figure 1: E(k) ==============
 fig, ax = plt.subplots()
 ax.loglog(kvals, spec_truth, 'k--', lw=2.5, label='Truth')
-best_nfe = {'mfm': 64, 'mmf': 32, 'msc': 8}
+best_nfe = {'mfm': 64, 'mmf': 32, 'msc': 8, 'sfm_gauss': 64, 'sfm_std': 64}
 for label, mtype, _ in labels:
     nfe = best_nfe.get(label)
     if nfe is None: continue

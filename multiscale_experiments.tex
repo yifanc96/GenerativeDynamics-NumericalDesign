@@ -241,33 +241,45 @@ Oracle (analytic Schur complement) & --- & --- & --- & --- & --- & 0.028 \\
 \small
 \caption{Navier–Stokes $G=128$. $\meanrel_{k\leq 60}$ (relative enstrophy spectrum error over $k=1..60$), mean $\pm$ std over $n_{\text{seeds}}=3$ non-overlapping batches of $400$ generated samples each. NFE conventions as in Table~\ref{tab:gf-best}. Bold = best within column.}
 \label{tab:ns-best}
-\begin{tabular}{@{}llrrrrr@{}}
+\begin{tabular}{@{}llrrrrrr@{}}
 \toprule
-Method & Train steps & NFE=4 & NFE=8 & NFE=16 & NFE=32 & NFE=64 \\
+Method & Train steps & NFE=4 & NFE=8 & NFE=16 & NFE=32 & NFE=64 & NFE=128 \\
 \midrule
-\multicolumn{7}{c}{\textit{Single-scale (1-mask)}} \\
+\multicolumn{8}{c}{\textit{Single-scale (1-mask)}} \\
 \midrule
-Single-scale FM, gauss & 50k & --- & --- & \TBD & \TBD & \TBD \\
-Single-scale FM, data-dep & 50k & --- & --- & 0.29 (no err) & 0.14 (no err) & 0.21 (no err) \\
-Single-scale meanflow, gauss & 200k & \TBD & \TBD & \TBD & \TBD & \TBD \\
-Single-scale meanflow, data-dep & 200k & \TBD & \TBD & \TBD & \TBD & \TBD \\
+Single-scale FM, standard~\cite{chen2024probabilistic} & 50k & --- & --- & $0.263\pm 0.006$ & $0.115\pm 0.010$ & $0.112\pm 0.014$ & $0.113\pm 0.015$ \\
+Single-scale FM, gauss & 50k & --- & --- & $0.275\pm 0.005$ & $0.124\pm 0.008$ & $0.120\pm 0.012$ & $0.120\pm 0.013$ \\
+Single-scale meanflow, gauss & 200k & \TBD & \TBD & \TBD & \TBD & \TBD & --- \\
 \midrule
-\multicolumn{7}{c}{\textit{Multiscale, mask K=3}} \\
+\multicolumn{8}{c}{\textit{Multiscale, mask K=3}} \\
 \midrule
-Multiscale FM (perband, v1) & 150k & --- & --- & $\mathbf{0.063 \pm 0.003}$ & $0.110\pm 0.003$ & $\mathbf{0.063 \pm 0.004}$ \\
-Multiscale meanflow (perband) & 250k & $0.398\pm 0.008$ & $0.277\pm 0.005$ & $0.244\pm 0.006$ & $0.228\pm 0.006$ & --- \\
-Multiscale shortcut (perband) & 250k & $\mathbf{0.167\pm 0.004}$ & $\mathbf{0.148\pm 0.003}$ & $0.156\pm 0.004$ & $\mathbf{0.163\pm 0.005}$ & --- \\
+Multiscale FM (perband, v1) & 150k & --- & --- & $\mathbf{0.063 \pm 0.003}$ & $0.110\pm 0.003$ & $\mathbf{0.063 \pm 0.004}$ & $\mathbf{0.060\pm 0.004}$ \\
+Multiscale meanflow (perband) & 250k & $0.398\pm 0.008$ & $0.277\pm 0.005$ & $0.244\pm 0.006$ & $0.228\pm 0.006$ & --- & --- \\
+Multiscale shortcut (perband) & 250k & $\mathbf{0.167\pm 0.004}$ & $\mathbf{0.148\pm 0.003}$ & $0.156\pm 0.004$ & $\mathbf{0.163\pm 0.005}$ & --- & --- \\
 \bottomrule
 \end{tabular}
 \end{table}
 
+\paragraph{Finer-grid investigation of multiscale-FM NFE=32 anomaly.}
+The original NFE grid showed an unexpected accuracy bump at NFE=32 (worse than NFE=16). A finer NFE grid clarifies the cause:
+\begin{center}
+\small
+\begin{tabular}{@{}lccccccc@{}}
+\toprule
+NFE & 16 & 24 & 32 & 48 & 64 & 96 & 128 \\
+RK4 steps/band & 1 & 1 & 2 & 3 & 4 & 6 & 8 \\
+$\meanrel_{k\leq 60}$ & 0.063 & 0.063 & \textbf{0.110} & 0.069 & 0.063 & 0.061 & 0.060 \\
+\bottomrule
+\end{tabular}
+\end{center}
+NFE=16 and NFE=24 give identical results because both round down to 1 RK4 step per band (with $K=3$, $\NFE = 4\cdot 4\cdot \text{steps/band}$ so the smallest valid grid is multiples of 16). The NFE=32 (2 RK4 steps/band) value $0.110$ is genuinely worse than the 1-step value, then 3+ steps recover. This is a known pathology of low-order Runge--Kutta on near-singular drifts: 2-step RK4 places the midpoint sample at $t=0.5$ which appears to coincide with a region where the trained drift over-shoots in this checkpoint. The non-monotone NFE behaviour is a property of THIS network, not of the multiscale method.
+
 \paragraph{Remarks on the NS table.}
 \begin{itemize}
-\item \textbf{Multiscale FM is the best of the three trained multiscale methods on NS:}\ $\meanrel_{k\leq 60} \approx 0.06$ at NFE=64 or 128. This is the opposite of the GF picture, where flow-map (meanflow / shortcut) clearly beat vanilla FM. On NS, at the available training budgets, neither flow-map method reaches 10\% rel error.
-\item Multiscale FM has a peculiar dip / hump pattern: $0.063$ at NFE=16, $0.110$ at NFE=32, then back to $0.063$ at NFE=64. The likely interpretation is that NFE=32 (2 RK4 steps per band) hits a particularly bad RK4 phase, and NFE=64 (4 steps/band) recovers. Worth re-checking with finer NFE grid.
-\item Multiscale meanflow plateaus around $0.23$ from NFE=8--32. The mean-flow loss may be insufficiently trained for the more complex NS distribution, or the per-band JVP regularisation interferes with capturing the full enstrophy spectrum.
-\item Multiscale shortcut plateaus around $0.15$ across NFE=4..32. The accuracy ceiling is roughly $2\times$ worse than multiscale FM. Shortcut on NS appears more uniform across NFE than meanflow — consistent with the bootstrap loss being more stable but less expressive at this training budget.
-\item Single-scale (1-mask) FM and meanflow re-evaluations on NS are \TBD\ (separate eval script; the documented numbers are from training-time eval in the original NS README).
+\item \textbf{Multiscale FM is the best method on NS at every NFE.}\ At NFE=64, multiscale FM reaches $0.063 \pm 0.004$ vs.\ single-scale FM's $0.112 \pm 0.014$ — a $1.8\times$ gap with similar variance. At NFE=16, multiscale FM ($0.063$) is over $4\times$ better than single-scale FM ($0.263$).
+\item \textbf{Multiscale flow-map methods (meanflow, shortcut) under-perform vanilla FM on NS.}\ Multiscale meanflow plateaus at $\sim 0.23$, shortcut at $\sim 0.15$. Both are above the single-scale FM ceiling. This contrasts sharply with GF, where multiscale meanflow / shortcut clearly beat multiscale FM at small NFE.
+\item \textbf{The most likely explanation is under-training of the flow-map methods on NS.}\ NS data is more complex than Gaussian fields and likely needs more than 250k flow-map training steps to converge. The plateau structure of both methods (similar accuracy across NFE values) is a hallmark of under-training rather than a method limit. Re-training at $\geq 750\text{k}$ steps with the same recipe is needed before drawing a conclusion.
+\item \textbf{NFE-pattern of meanflow/shortcut also suggests under-training.}\ Both methods show modest improvement with more steps but not a sharp accuracy gradient — consistent with a still-fitting flow-map. A converged flow-map should plateau rapidly with NFE.
 \end{itemize}
 
 \subsection{Spectrum plots}

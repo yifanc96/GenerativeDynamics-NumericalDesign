@@ -38,6 +38,34 @@ def build_perband_bands(G, K, name_prefix='mask_'):
     return bands
 
 
+def run_single_scale_fm(ckpt, G, n_samples, n_rk4, device, ch=32):
+    """Single-scale (1-mask) FM with gauss base, RK4 sampler.
+    Matches train_ns_standard.py / train_ns_gauss_base.py architecture (1ch UNet at G).
+    """
+    net = Unet(num_classes=1, in_channels=1, out_channels=1, dim=ch,
+               dim_mults=(1, 2, 2, 2), resnet_block_groups=8,
+               learned_sinusoidal_cond=True, random_fourier_features=False,
+               learned_sinusoidal_dim=32, attn_dim_head=32, attn_heads=4, use_classes=False)
+    sd = torch.load(ckpt, map_location='cpu', weights_only=True)
+    # try unwrapping if state dict has 'net.' prefix
+    if all(k.startswith('net.') for k in sd):
+        sd = {k[4:]: v for k, v in sd.items()}
+    net.load_state_dict(sd); net = net.to(device); net.eval()
+
+    zt = torch.randn(n_samples, 1, G, G, device=device)
+    nodes = torch.linspace(1e-3, 1 - 1e-3, n_rk4 + 1)
+    for i in range(len(nodes) - 1):
+        sv = float(nodes[i]); ds = float(nodes[i + 1] - nodes[i])
+        def vel(z, tv):
+            tt = torch.full((n_samples,), tv, device=device)
+            with torch.no_grad():
+                return net(z, tt, classes=None)
+        k1 = vel(zt, sv); k2 = vel(zt + .5 * ds * k1, sv + .5 * ds)
+        k3 = vel(zt + .5 * ds * k2, sv + .5 * ds); k4 = vel(zt + ds * k3, sv + ds)
+        zt = zt + (ds / 6) * (k1 + 2 * k2 + 2 * k3 + k4)
+    return zt.squeeze(1).cpu()
+
+
 def run_multiscale_fm_v1(ckpt_dir, bands_pb, train_data, G, n_samples, n_rk4, device, ch=32):
     """v1-style 2-channel multiscale FM (train_ns_multiscale_perband.py).
     Bands have name 's{k}_R{R}' (no mask_ prefix).
@@ -190,9 +218,12 @@ def main():
     bands_v1 = build_perband_bands(G, K, name_prefix='')  # 2-channel with s{k}_R{R} (v1 multiscale_perband)
 
     method_configs = [
-        ('mfm', 'fm_v1', 'results/ns_mask_K3_G128', bands_v1, [16, 32, 64, 128]),
+        # finer NFE grid for mfm to investigate the NFE=32 anomaly
+        ('mfm', 'fm_v1', 'results/ns_mask_K3_G128', bands_v1, [16, 24, 32, 48, 64, 96, 128]),
         ('mmf', 'mf_pb', 'results/ns_perband_mf_K3', bands_pb, [4, 8, 16, 32]),
         ('msc', 'mf_pb', 'results/ns_perband_shortcut_K3', bands_pb, [4, 8, 16, 32]),
+        ('sfm_gauss', 'single_fm', 'results/ns_gauss_base/model_final.pt', None, [16, 32, 64, 128]),
+        ('sfm_std',   'single_fm', 'results/ns_standard_1mask_G128/full/model.pt', None, [16, 32, 64, 128]),
     ]
 
     results = {'spec_truth_mean': spec_truth_mean, 'truth_specs': truth_specs, 'kvals': kvals}
@@ -200,6 +231,31 @@ def main():
     for label, mtype, ckpt, bands_use, nfe_list in method_configs:
         if not os.path.exists(ckpt):
             print(f'SKIP {label}: {ckpt} not found'); continue
+        # single-scale uses ckpt as a file directly
+        if mtype == 'single_fm':
+            if not os.path.isfile(ckpt):
+                print(f'SKIP {label}: {ckpt} not a file'); continue
+            print(f'\n=== {label} ({mtype}) ===')
+            nfe_results, nfe_specs = {}, {}
+            for nfe in nfe_list:
+                seed_specs = []
+                for s in range(n_seeds_eff):
+                    torch.manual_seed(s); np.random.seed(s)
+                    n_rk4 = max(1, nfe // 4)
+                    gen = run_single_scale_fm(ckpt, G, n_per_seed, n_rk4, device)
+                    _, enst_gen, _ = get_energy_spectrum(gen)
+                    seed_specs.append(enst_gen)
+                seed_specs = np.stack(seed_specs)
+                rel = np.abs(seed_specs - spec_truth_mean[None]) / (np.abs(spec_truth_mean[None]) + 1e-30)
+                mr60 = rel[:, :60].mean(axis=1)
+                print(f'  NFE={nfe:4d}  mean_rel<=60 = {mr60.mean():.4f} ± {mr60.std():.4f}')
+                nfe_results[nfe] = rel
+                nfe_specs[nfe] = seed_specs
+            for nfe, r in nfe_results.items():
+                results[f'rel_{label}_NFE{nfe}'] = r
+            for nfe, sp in nfe_specs.items():
+                results[f'spec_{label}_NFE{nfe}'] = sp
+            continue
         # check presence of all band model files
         missing = [b['name'] for b in bands_use if not os.path.exists(os.path.join(ckpt, b['name'], 'model.pt'))]
         if missing:
