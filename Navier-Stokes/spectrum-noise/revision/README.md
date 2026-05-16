@@ -58,6 +58,26 @@ data / write outputs in this folder, so the layout is intentionally flat.
   (NS white + designed) from saved spectra. Used to sanity-check that the new
   code reproduces the original-paper numbers before adding revisions on top.
 
+### Pre-existing background code (from `main-Lip` / original paper, pre-2026-04-17)
+These scripts were authored before the revision cycle but are cited or directly
+relevant to the revised manuscript. Copied here so `revision/` is self-contained.
+
+- `auto_lip_ns.py` — autograd-based empirical Lipschitz of the trained NS drift.
+- `lipschitz_check.py`, `lipschitz_perband.py` — pointwise and per-band
+  Lipschitz diagnostics used in App. F.B.
+- `eval_lip_transfer.py` — designed-schedule inference transfer formula
+  evaluation at 64/128/256 (App. F.B background and Sec. 5.2).
+- `eval_nongaussian.py`, `eval_nongaussian_v2.py` — flatness / kurtosis / KS
+  diagnostics on generated vs. ground-truth NS ensembles; feeds Table 5.5.
+- `train_ns_lip_compare.py` — training driver for the white-noise + designed
+  schedule comparison reused from the `main-Lip` paper.
+- `reproduce_lip_ns.py`, `reproduce_lip_ns_compare.py` — regenerate the
+  `main-Lip` NS results (the same NS example as Sec. 5.2).
+- `make_perband_figure.py` — per-band error plotting helper.
+
+Companion PNG outputs from these scripts: `ns_lip_*.png`, `ns_nongaussian_*.png`,
+`ns_spectrum_eval_all.png`.
+
 ## Outputs
 
 ### Checkpoints
