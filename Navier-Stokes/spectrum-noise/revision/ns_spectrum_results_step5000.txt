@@ -1,0 +1,6 @@
+# NS spectrum noise prior, hi=128, ckpt at step 5000
+# lambda* (auto) = 5.007637e-01
+# steps  mid_lin  high_lin  mid_des  high_des
+10	3.866506e-01	3.011374e-01	2.657002e-01	2.640197e-01
+20	3.824268e-01	3.000191e-01	3.593900e-01	2.896513e-01
+50	3.516471e-01	2.948191e-01	3.599053e-01	2.974098e-01
